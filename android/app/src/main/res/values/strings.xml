@@ -1,0 +1,18 @@
+<resources>
+    <string name="app_name">PolyPulse</string>
+    <string name="market_list_title">PolyPulse Markets</string>
+    <string name="search_hint">Search markets...</string>
+    <string name="market_details_title">Market Details</string>
+    <string name="volume_label">Volume: $</string>
+    <string name="outcomes_title">Outcomes</string>
+    <string name="price_history_title">Price History (24h)</string>
+    <string name="no_history_data">No history data available</string>
+    <string name="live_alerts_title">Live Alerts</string>
+    <string name="price_alert_label">Price Alert</string>
+    <string name="nav_markets">Markets</string>
+    <string name="nav_alerts">Alerts</string>
+    <string name="back_content_desc">Back</string>
+    <string name="home_content_desc">Home</string>
+    <string name="alerts_content_desc">Alerts</string>
+    <string name="search_content_desc">Search</string>
+</resources>

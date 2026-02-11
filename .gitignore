@@ -1,0 +1,36 @@
+# macOS
+.DS_Store
+
+# Android
+.gradle/
+local.properties
+.idea/
+*.iml
+build/
+app/build/
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.ap_
+*.dex
+.navigation/
+
+# Python / Backend
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+env/
+.env
+.venv
+*.db
+*.sqlite3
+polypulse.db
+
+# Sensitive Keys (Important!)
+serviceAccountKey.json
+google-services.json
+key.properties
+*.jks
+*.keystore
