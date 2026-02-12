@@ -12,15 +12,26 @@ private val Context.dataStore by preferencesDataStore(name = "auth_prefs")
 class TokenManager(private val context: Context) {
     companion object {
         private val TOKEN_KEY = stringPreferencesKey("jwt_token")
+        private val FCM_TOKEN_KEY = stringPreferencesKey("fcm_token")
     }
 
     val token: Flow<String?> = context.dataStore.data.map { preferences ->
         preferences[TOKEN_KEY]
     }
 
+    val fcmToken: Flow<String?> = context.dataStore.data.map { preferences ->
+        preferences[FCM_TOKEN_KEY]
+    }
+
     suspend fun saveToken(token: String) {
         context.dataStore.edit { preferences ->
             preferences[TOKEN_KEY] = token
+        }
+    }
+
+    suspend fun saveFcmToken(token: String) {
+        context.dataStore.edit { preferences ->
+            preferences[FCM_TOKEN_KEY] = token
         }
     }
 

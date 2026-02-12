@@ -47,6 +47,8 @@ class AuthViewModel(private val repository: AuthRepository) : ViewModel() {
                     isLoggedIn = true,
                     error = null
                 )
+                // Sync FCM Token
+                repository.syncFcmToken()
             }
             .onFailure { e ->
                 _state.value = _state.value.copy(

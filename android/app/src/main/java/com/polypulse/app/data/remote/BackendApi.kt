@@ -39,4 +39,10 @@ interface BackendApi {
         @Header("Authorization") token: String,
         @Path("marketId") marketId: String
     ): Unit
+
+    @POST("notifications/register")
+    suspend fun registerFCMToken(
+        @Header("Authorization") token: String,
+        @Body request: com.polypulse.app.data.remote.dto.FCMTokenRequest
+    ): Unit
 }
