@@ -1,26 +1,31 @@
 package com.polypulse.app.presentation.market_list
 
+import android.app.Application
 import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableStateOf
-import androidx.lifecycle.ViewModel
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.polypulse.app.di.AppModule
 import com.polypulse.app.domain.model.Market
 import kotlinx.coroutines.launch
 
-class MarketListViewModel : ViewModel() {
+class MarketListViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _state = mutableStateOf(MarketListState())
     val state: State<MarketListState> = _state
 
     private val repository = AppModule.repository
+    private val watchlistRepository = AppModule.provideWatchlistRepository(application.applicationContext)
+    private val authRepository = AppModule.provideAuthRepository(application.applicationContext)
 
     init {
         getMarkets()
+        getWatchlist()
     }
 
     fun refreshMarkets() {
         getMarkets()
+        getWatchlist()
     }
 
     fun onCategorySelected(category: String) {
@@ -33,12 +38,50 @@ class MarketListViewModel : ViewModel() {
         updateFilteredMarkets()
     }
 
+    fun toggleWatchlist(marketId: String) {
+        viewModelScope.launch {
+            if (authRepository.isUserLoggedIn()) {
+                val currentWatchlist = _state.value.watchlistIds.toMutableSet()
+                if (currentWatchlist.contains(marketId)) {
+                    // Remove locally first for optimistic update
+                    currentWatchlist.remove(marketId)
+                    _state.value = _state.value.copy(watchlistIds = currentWatchlist)
+                    
+                    val result = watchlistRepository.removeFromWatchlist(marketId)
+                    if (result.isFailure) {
+                        // Revert on failure
+                        currentWatchlist.add(marketId)
+                        _state.value = _state.value.copy(watchlistIds = currentWatchlist)
+                    }
+                } else {
+                    // Add locally
+                    currentWatchlist.add(marketId)
+                    _state.value = _state.value.copy(watchlistIds = currentWatchlist)
+                    
+                    val result = watchlistRepository.addToWatchlist(marketId)
+                    if (result.isFailure) {
+                        // Revert on failure
+                        currentWatchlist.remove(marketId)
+                        _state.value = _state.value.copy(watchlistIds = currentWatchlist)
+                    }
+                }
+            } else {
+                // TODO: Handle guest user (maybe prompt login or local storage)
+            }
+        }
+    }
+
     private fun updateFilteredMarkets() {
         val currentMarkets = _state.value.markets
         val category = _state.value.selectedCategory
         val query = _state.value.searchQuery
-
-        val filteredByCategory = filterByCategory(currentMarkets, category)
+        
+        val filteredByCategory = if (category == "Watchlist") {
+             currentMarkets.filter { _state.value.watchlistIds.contains(it.id) }
+        } else {
+             filterByCategory(currentMarkets, category)
+        }
+        
         val finalFiltered = filterByQuery(filteredByCategory, query)
 
         _state.value = _state.value.copy(filteredMarkets = finalFiltered)
@@ -49,16 +92,32 @@ class MarketListViewModel : ViewModel() {
             _state.value = _state.value.copy(isLoading = true)
             val result = repository.getMarkets()
             result.onSuccess { markets ->
-                _state.value = MarketListState(
+                // Keep the existing watchlistIds and selectedCategory when markets reload
+                _state.value = _state.value.copy(
                     markets = markets,
                     isLoading = false
                 )
                 updateFilteredMarkets()
             }.onFailure { error ->
-                _state.value = MarketListState(
+                _state.value = _state.value.copy(
                     error = error.message ?: "An unexpected error occurred",
                     isLoading = false
                 )
+            }
+        }
+    }
+    
+    private fun getWatchlist() {
+        viewModelScope.launch {
+            if (authRepository.isUserLoggedIn()) {
+                val result = watchlistRepository.getWatchlist()
+                result.onSuccess { ids ->
+                    _state.value = _state.value.copy(watchlistIds = ids.toSet())
+                    // If current tab is Watchlist, refresh the list
+                    if (_state.value.selectedCategory == "Watchlist") {
+                        updateFilteredMarkets()
+                    }
+                }
             }
         }
     }
@@ -79,32 +138,20 @@ class MarketListViewModel : ViewModel() {
             
             when (category) {
                 "Politics" -> {
-                    tags.contains("politics") || 
-                    tags.contains("elections") || 
-                    question.contains("trump") || 
-                    question.contains("biden") || 
-                    question.contains("election") ||
-                    question.contains("president")
+                    tags.any { it.contains("politic") || it.contains("election") } || 
+                    question.contains("trump", ignoreCase = true) || 
+                    question.contains("biden", ignoreCase = true) || 
+                    question.contains("election", ignoreCase = true) ||
+                    question.contains("president", ignoreCase = true)
                 }
                 "Crypto" -> {
-                    tags.contains("crypto") || 
-                    tags.contains("bitcoin") || 
-                    tags.contains("ethereum") || 
-                    question.contains("bitcoin") || 
-                    question.contains("ethereum") || 
-                    question.contains("$") ||
-                    question.contains("token")
+                    tags.any { it.contains("crypto") || it.contains("bitcoin") || it.contains("ethereum") } || 
+                    question.contains("bitcoin", ignoreCase = true) || 
+                    question.contains("ethereum", ignoreCase = true) || 
+                    question.contains("token", ignoreCase = true)
                 }
                 "Sports" -> {
-                    tags.contains("sports") || 
-                    tags.contains("nfl") || 
-                    tags.contains("nba") || 
-                    tags.contains("soccer") ||
-                    tags.contains("ufc") ||
-                    question.contains("nfl") || 
-                    question.contains("nba") || 
-                    question.contains("game") ||
-                    question.contains("vs")
+                    tags.any { it.contains("sport") || it.contains("nfl") || it.contains("nba") || it.contains("soccer") }
                 }
                 else -> true
             }

@@ -8,5 +8,6 @@ data class MarketListState(
     val filteredMarkets: List<Market> = emptyList(),
     val selectedCategory: String = "All",
     val searchQuery: String = "",
-    val error: String = ""
+    val error: String = "",
+    val watchlistIds: Set<String> = emptySet()
 )

@@ -40,6 +40,18 @@ def init_db():
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+
+        # Create watchlists table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS watchlists (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                market_id TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, market_id),
+                FOREIGN KEY(user_id) REFERENCES users(id)
+            )
+        ''')
         
         conn.commit()
         conn.close()
@@ -127,3 +139,43 @@ def get_user_by_email(email: str) -> Optional[Dict]:
     except Exception as e:
         logger.error(f"Failed to fetch user by email: {e}")
         return None
+
+# Watchlist Functions
+def add_to_watchlist(user_id: int, market_id: str) -> bool:
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('INSERT INTO watchlists (user_id, market_id) VALUES (?, ?)', (user_id, market_id))
+        conn.commit()
+        conn.close()
+        return True
+    except sqlite3.IntegrityError:
+        # Already exists
+        return True
+    except Exception as e:
+        logger.error(f"Failed to add to watchlist: {e}")
+        return False
+
+def remove_from_watchlist(user_id: int, market_id: str) -> bool:
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM watchlists WHERE user_id = ? AND market_id = ?', (user_id, market_id))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        logger.error(f"Failed to remove from watchlist: {e}")
+        return False
+
+def get_user_watchlist(user_id: int) -> List[str]:
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT market_id FROM watchlists WHERE user_id = ?', (user_id,))
+        rows = cursor.fetchall()
+        conn.close()
+        return [row['market_id'] for row in rows]
+    except Exception as e:
+        logger.error(f"Failed to get watchlist: {e}")
+        return []

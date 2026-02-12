@@ -6,9 +6,10 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from app.services.market_service import MarketService
 from app.services.alert_service import AlertService
 from app.services.auth_service import AuthService, ACCESS_TOKEN_EXPIRE_MINUTES
-from app.database import init_db, create_user, get_user_by_email
+from app.database import init_db, create_user, get_user_by_email, add_to_watchlist, remove_from_watchlist, get_user_watchlist
 from app.schemas import UserRegister, UserLogin, Token, UserResponse
 from datetime import timedelta
+from typing import List
 
 # Configure logging
 logging.basicConfig(
@@ -118,3 +119,23 @@ def read_users_me(current_user: dict = Depends(get_current_user)):
         "email": current_user["email"],
         "created_at": current_user["created_at"]
     }
+
+# Watchlist Endpoints
+
+@app.get("/watchlist", response_model=List[str])
+def get_watchlist(current_user: dict = Depends(get_current_user)):
+    return get_user_watchlist(current_user["id"])
+
+@app.post("/watchlist/{market_id}")
+def add_watchlist_item(market_id: str, current_user: dict = Depends(get_current_user)):
+    success = add_to_watchlist(current_user["id"], market_id)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to add to watchlist")
+    return {"message": "Added to watchlist"}
+
+@app.delete("/watchlist/{market_id}")
+def remove_watchlist_item(market_id: str, current_user: dict = Depends(get_current_user)):
+    success = remove_from_watchlist(current_user["id"], market_id)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to remove from watchlist")
+    return {"message": "Removed from watchlist"}

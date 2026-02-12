@@ -20,6 +20,9 @@ import com.polypulse.app.domain.model.Outcome
 
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.outlined.FavoriteBorder
+import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 
 import androidx.compose.ui.res.stringResource
 import com.polypulse.app.R
@@ -36,7 +39,7 @@ fun MarketListScreen(
     onMarketClick: (Market) -> Unit
 ) {
     val state = viewModel.state.value
-    val categories = listOf("All", "Politics", "Crypto", "Sports")
+    val categories = listOf("All", "Politics", "Crypto", "Sports", "Watchlist")
 
     // Pull to Refresh State
     val refreshState = rememberPullRefreshState(
@@ -47,9 +50,9 @@ fun MarketListScreen(
     Scaffold(
         topBar = {
             Column {
-                TopAppBar(
+                CenterAlignedTopAppBar(
                     title = { Text(stringResource(R.string.market_list_title)) },
-                    colors = TopAppBarDefaults.topAppBarColors(
+                    colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
                         containerColor = MaterialTheme.colorScheme.primary,
                         titleContentColor = MaterialTheme.colorScheme.onPrimary
                     )
@@ -62,7 +65,7 @@ fun MarketListScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 16.dp, vertical = 8.dp)
-                        .background(MaterialTheme.colorScheme.surface),
+                        .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(24.dp)),
                     placeholder = { Text(stringResource(R.string.search_hint)) },
                     leadingIcon = { Icon(Icons.Default.Search, contentDescription = stringResource(R.string.search_content_desc)) },
                     singleLine = true,
@@ -77,7 +80,13 @@ fun MarketListScreen(
                     selectedTabIndex = categories.indexOf(state.selectedCategory),
                     containerColor = MaterialTheme.colorScheme.primary,
                     contentColor = MaterialTheme.colorScheme.onPrimary,
-                    edgePadding = 0.dp
+                    edgePadding = 0.dp,
+                    indicator = { tabPositions ->
+                        TabRowDefaults.Indicator(
+                            Modifier.tabIndicatorOffset(tabPositions[categories.indexOf(state.selectedCategory)]),
+                            color = MaterialTheme.colorScheme.onPrimary
+                        )
+                    }
                 ) {
                     categories.forEach { category ->
                         Tab(
@@ -109,7 +118,12 @@ fun MarketListScreen(
                 contentPadding = PaddingValues(bottom = 16.dp)
             ) {
                 items(state.filteredMarkets) { market ->
-                    MarketItem(market = market, onClick = { onMarketClick(market) })
+                    MarketItem(
+                        market = market,
+                        isWatchlisted = state.watchlistIds.contains(market.id),
+                        onToggleWatchlist = { viewModel.toggleWatchlist(market.id) },
+                        onClick = { onMarketClick(market) }
+                    )
                 }
             }
 
@@ -124,7 +138,12 @@ fun MarketListScreen(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MarketItem(market: Market, onClick: () -> Unit) {
+fun MarketItem(
+    market: Market, 
+    isWatchlisted: Boolean,
+    onToggleWatchlist: () -> Unit,
+    onClick: () -> Unit
+) {
     Card(
         onClick = onClick,
         modifier = Modifier
@@ -144,13 +163,21 @@ fun MarketItem(market: Market, onClick: () -> Unit) {
                     contentScale = ContentScale.Crop
                 )
                 Spacer(modifier = Modifier.width(12.dp))
-                Text(
-                    text = market.question,
-                    style = MaterialTheme.typography.titleMedium,
-                    maxLines = 3,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
-                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = market.question,
+                        style = MaterialTheme.typography.titleMedium,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                IconButton(onClick = onToggleWatchlist) {
+                    Icon(
+                        imageVector = if (isWatchlisted) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
+                        contentDescription = "Watchlist",
+                        tint = if (isWatchlisted) Color.Red else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
             
             Spacer(modifier = Modifier.height(12.dp))

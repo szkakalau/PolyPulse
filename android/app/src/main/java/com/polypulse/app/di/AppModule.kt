@@ -7,6 +7,7 @@ import com.polypulse.app.data.auth.TokenManager
 import com.polypulse.app.data.remote.BackendApi
 import com.polypulse.app.data.remote.PolymarketApi
 import com.polypulse.app.data.repository.MarketRepositoryImpl
+import com.polypulse.app.data.repository.WatchlistRepository
 import com.polypulse.app.domain.repository.MarketRepository
 import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
@@ -50,11 +51,23 @@ object AppModule {
     @Volatile
     private var authRepository: AuthRepository? = null
 
+    @Volatile
+    private var watchlistRepository: WatchlistRepository? = null
+
     fun provideAuthRepository(context: Context): AuthRepository {
         return authRepository ?: synchronized(this) {
             val tokenManager = TokenManager(context)
             val repo = AuthRepository(backendApi, tokenManager)
             authRepository = repo
+            repo
+        }
+    }
+
+    fun provideWatchlistRepository(context: Context): WatchlistRepository {
+        return watchlistRepository ?: synchronized(this) {
+            val tokenManager = TokenManager(context)
+            val repo = WatchlistRepository(backendApi, tokenManager)
+            watchlistRepository = repo
             repo
         }
     }
