@@ -11,8 +11,10 @@
     <string name="price_alert_label">Price Alert</string>
     <string name="nav_markets">Markets</string>
     <string name="nav_alerts">Alerts</string>
+    <string name="nav_profile">Profile</string>
     <string name="back_content_desc">Back</string>
     <string name="home_content_desc">Home</string>
     <string name="alerts_content_desc">Alerts</string>
+    <string name="profile_content_desc">Profile</string>
     <string name="search_content_desc">Search</string>
 </resources>

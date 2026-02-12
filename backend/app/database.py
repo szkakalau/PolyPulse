@@ -1,6 +1,6 @@
 import sqlite3
 import logging
-from typing import List, Dict
+from typing import List, Dict, Optional
 import os
 
 logger = logging.getLogger(__name__)
@@ -28,6 +28,16 @@ def init_db():
                 new_price REAL NOT NULL,
                 change REAL NOT NULL,
                 message TEXT NOT NULL
+            )
+        ''')
+
+        # Create users table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT UNIQUE NOT NULL,
+                password_hash TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         ''')
         
@@ -81,3 +91,39 @@ def get_recent_alerts(limit: int = 50) -> List[Dict]:
     except Exception as e:
         logger.error(f"Failed to fetch alerts from DB: {e}")
         return []
+
+def create_user(email: str, password_hash: str) -> Optional[Dict]:
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('INSERT INTO users (email, password_hash) VALUES (?, ?)', (email, password_hash))
+        user_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return {"id": user_id, "email": email}
+    except sqlite3.IntegrityError:
+        logger.warning(f"User with email {email} already exists")
+        return None
+    except Exception as e:
+        logger.error(f"Failed to create user: {e}")
+        return None
+
+def get_user_by_email(email: str) -> Optional[Dict]:
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT * FROM users WHERE email = ?', (email,))
+        row = cursor.fetchone()
+        conn.close()
+        
+        if row:
+            return {
+                "id": row["id"],
+                "email": row["email"],
+                "password_hash": row["password_hash"],
+                "created_at": row["created_at"]
+            }
+        return None
+    except Exception as e:
+        logger.error(f"Failed to fetch user by email: {e}")
+        return None
