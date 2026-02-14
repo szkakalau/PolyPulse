@@ -1,22 +1,8 @@
 package com.polypulse.app.presentation.alerts
 
+import android.app.Application
 import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableStateOf
-import androidx.lifecycle.ViewModel
-import androidx.lifecycle.viewModelScope
-import com.polypulse.app.data.remote.dto.AlertDto
-import com.polypulse.app.di.AppModule
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
-
-data class AlertsState(
-    val alerts: List<AlertDto> = emptyList(),
-    val isLoading: Boolean = false,
-    val error: String = ""
-)
-
-import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.polypulse.app.data.remote.dto.AlertDto
@@ -65,8 +51,7 @@ class AlertsViewModel(application: Application) : AndroidViewModel(application) 
 
     private suspend fun fetchAlerts() {
         try {
-            val response = api.getAlerts()
-            val newAlerts = response.alerts
+            val newAlerts = api.getAlerts()
             
             if (newAlerts.isNotEmpty()) {
                 // Check for new alerts to notify

@@ -11,6 +11,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -41,6 +42,12 @@ import com.polypulse.app.presentation.auth.RegisterScreen
 import com.polypulse.app.presentation.market_detail.MarketDetailScreen
 import com.polypulse.app.presentation.market_list.MarketListScreen
 import com.polypulse.app.presentation.market_list.MarketListViewModel
+import com.polypulse.app.presentation.dashboard.DashboardScreen
+import com.polypulse.app.presentation.dashboard.DashboardViewModel
+import com.polypulse.app.presentation.dashboard.DashboardViewModelFactory
+import com.polypulse.app.presentation.leaderboard.LeaderboardScreen
+import com.polypulse.app.presentation.leaderboard.LeaderboardViewModel
+import com.polypulse.app.presentation.leaderboard.LeaderboardViewModelFactory
 import com.polypulse.app.presentation.profile.ProfileScreen
 import com.polypulse.app.presentation.util.NotificationHelper
 import com.polypulse.app.ui.theme.PolyPulseTheme
@@ -81,6 +88,9 @@ fun PolyPulseApp() {
     val context = LocalContext.current
     val authRepository = remember { AppModule.provideAuthRepository(context) }
     val authViewModel: AuthViewModel = viewModel(factory = AuthViewModelFactory(authRepository))
+    val dashboardRepository = remember { AppModule.provideDashboardRepository(context) }
+    val dashboardViewModel: DashboardViewModel = viewModel(factory = DashboardViewModelFactory(dashboardRepository))
+    val leaderboardViewModel: LeaderboardViewModel = viewModel(factory = LeaderboardViewModelFactory(dashboardRepository))
     
     Scaffold(
         bottomBar = {
@@ -88,7 +98,7 @@ fun PolyPulseApp() {
             val currentRoute = navBackStackEntry?.destination?.route
             
             // Only show bottom bar on top-level screens
-            if (currentRoute == "market_list" || currentRoute == "alerts" || currentRoute == "profile") {
+            if (currentRoute == "market_list" || currentRoute == "alerts" || currentRoute == "profile" || currentRoute == "dashboard") {
                 NavigationBar {
                     NavigationBarItem(
                         icon = { Icon(Icons.Default.Home, contentDescription = stringResource(R.string.home_content_desc)) },
@@ -96,6 +106,18 @@ fun PolyPulseApp() {
                         selected = currentRoute == "market_list",
                         onClick = {
                             navController.navigate("market_list") {
+                                popUpTo("market_list") { saveState = true }
+                                launchSingleTop = true
+                                restoreState = true
+                            }
+                        }
+                    )
+                    NavigationBarItem(
+                        icon = { Icon(Icons.Default.Info, contentDescription = "Dashboard") },
+                        label = { Text("Dashboard") },
+                        selected = currentRoute == "dashboard",
+                        onClick = {
+                            navController.navigate("dashboard") {
                                 popUpTo("market_list") { saveState = true }
                                 launchSingleTop = true
                                 restoreState = true
@@ -167,6 +189,18 @@ fun PolyPulseApp() {
                     viewModel = authViewModel,
                     onNavigateToLogin = { navController.navigate("login") },
                     onRegisterSuccess = { navController.popBackStack() }
+                )
+            }
+            composable("dashboard") {
+                DashboardScreen(
+                    viewModel = dashboardViewModel,
+                    onNavigateToLeaderboard = { navController.navigate("leaderboard") }
+                )
+            }
+            composable("leaderboard") {
+                LeaderboardScreen(
+                    viewModel = leaderboardViewModel,
+                    onNavigateBack = { navController.popBackStack() }
                 )
             }
             composable(

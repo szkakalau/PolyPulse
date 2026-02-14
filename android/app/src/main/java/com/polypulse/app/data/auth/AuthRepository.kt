@@ -14,7 +14,7 @@ class AuthRepository(
 ) {
     suspend fun login(email: String, password: String): Result<Unit> {
         return try {
-            val response = api.login(LoginRequest(email, password))
+            val response = api.login(email, password)
             tokenManager.saveToken(response.access_token)
             // Attempt to sync FCM token after login
             syncFcmToken()

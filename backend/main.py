@@ -1,118 +1,118 @@
 import logging
-from fastapi import FastAPI, Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer
 from contextlib import asynccontextmanager
+from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from apscheduler.schedulers.background import BackgroundScheduler
-from app.services.market_service import MarketService
-from app.services.alert_service import AlertService
-from app.services.auth_service import AuthService, ACCESS_TOKEN_EXPIRE_MINUTES
-from app.database import init_db, create_user, get_user_by_email, add_to_watchlist, remove_from_watchlist, get_user_watchlist
-from app.schemas import UserRegister, UserLogin, Token, UserResponse
-from datetime import timedelta
 from typing import List
 
+from app.database import init_db, get_recent_alerts, create_user, get_user_by_email
+from app.services.auth_service import AuthService
+from app.services.market_service import MarketService
+from app.services.whale_service import WhaleService
+from app.schemas import UserRegister, UserLogin, Token, UserResponse
+
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Initialize Services
-market_service = MarketService()
-alert_service = AlertService()
 auth_service = AuthService()
+market_service = MarketService()
+whale_service = WhaleService()
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
-
-def job_fetch_and_analyze():
-    logger.info("Job: Fetching markets...")
-    markets = market_service.fetch_active_markets()
-    logger.info(f"Job: Got {len(markets)} markets. Checking for alerts...")
-    alerts = alert_service.check_for_alerts(markets)
-    if alerts:
-        logger.info(f"Job: Generated {len(alerts)} alerts.")
+# Scheduler Jobs
+def update_whale_data():
+    logger.info("Scheduler: Fetching whale activity...")
+    try:
+        whale_service.fetch_whale_activity()
+        logger.info("Scheduler: Whale activity updated.")
+    except Exception as e:
+        logger.error(f"Scheduler Error (Whale): {e}")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Initialize DB
+    # Startup
+    logger.info("Starting up PolyPulse Backend...")
     init_db()
     
     scheduler = BackgroundScheduler()
-    # Run every 30 seconds
-    scheduler.add_job(job_fetch_and_analyze, 'interval', seconds=30)
+    # Fetch whale data every 2 minutes
+    scheduler.add_job(update_whale_data, 'interval', minutes=2)
+    
+    # Analyze smart money (closed markets) every 6 hours
+    scheduler.add_job(whale_service.analyze_smart_money, 'interval', hours=6)
+    
     scheduler.start()
-    logger.info("Startup: Scheduler started")
+    
+    # Run one immediate update
+    update_whale_data()
+    # Run smart money analysis in background (don't block startup)
+    scheduler.add_job(whale_service.analyze_smart_money) 
+    
     yield
+    
+    # Shutdown
+    logger.info("Shutting down...")
     scheduler.shutdown()
-    logger.info("Shutdown: Scheduler stopped")
 
 app = FastAPI(title="PolyPulse API", lifespan=lifespan)
 
+# CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Auth
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
 async def get_current_user(token: str = Depends(oauth2_scheme)):
     payload = auth_service.decode_token(token)
-    if payload is None:
+    if not payload:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Could not validate credentials",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    email: str = payload.get("sub")
-    if email is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
-    user = get_user_by_email(email)
-    if user is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+    user = get_user_by_email(payload.get("sub"))
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
     return user
 
-@app.get("/")
-def read_root():
-    return {"message": "PolyPulse Backend is Running"}
+# --- Endpoints ---
 
-@app.get("/health")
-def health_check():
-    return {"status": "healthy"}
-
-@app.get("/alerts")
-def get_alerts():
-    return {"alerts": alert_service.get_recent_alerts()}
-
-# Auth Endpoints
-
-@app.post("/auth/register", response_model=UserResponse)
+@app.post("/register", response_model=UserResponse)
 def register(user: UserRegister):
-    existing_user = get_user_by_email(user.email)
-    if existing_user:
+    existing = get_user_by_email(user.email)
+    if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
     
-    hashed_password = auth_service.get_password_hash(user.password)
-    new_user = create_user(user.email, hashed_password)
-    if not new_user:
+    hashed_pw = auth_service.get_password_hash(user.password)
+    user_id = create_user(user.email, hashed_pw)
+    
+    if not user_id:
         raise HTTPException(status_code=500, detail="Failed to create user")
         
-    return {
-        "id": new_user["id"],
-        "email": new_user["email"],
-        "created_at": "Just now" # simplified for response
-    }
+    return {"id": user_id, "email": user.email, "created_at": "now"}
 
-@app.post("/auth/login", response_model=Token)
-def login(user: UserLogin):
-    db_user = get_user_by_email(user.email)
-    if not db_user or not auth_service.verify_password(user.password, db_user["password_hash"]):
+@app.post("/token", response_model=Token)
+def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
+    user = get_user_by_email(form_data.username)
+    if not user or not auth_service.verify_password(form_data.password, user['password_hash']):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password",
+            detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
     
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = auth_service.create_access_token(
-        data={"sub": user.email}, expires_delta=access_token_expires
-    )
+    access_token = auth_service.create_access_token(data={"sub": user['email']})
     return {"access_token": access_token, "token_type": "bearer"}
 
-@app.get("/auth/me", response_model=UserResponse)
+@app.get("/users/me", response_model=UserResponse)
 def read_users_me(current_user: dict = Depends(get_current_user)):
     return {
         "id": current_user["id"],
@@ -120,22 +120,29 @@ def read_users_me(current_user: dict = Depends(get_current_user)):
         "created_at": current_user["created_at"]
     }
 
-# Watchlist Endpoints
+@app.get("/dashboard/stats")
+def get_dashboard_stats(current_user: dict = Depends(get_current_user)):
+    # Placeholder for dashboard stats
+    return {
+        "alerts_24h": 5,
+        "watchlist_count": 12,
+        "top_movers": []
+    }
 
-@app.get("/watchlist", response_model=List[str])
-def get_watchlist(current_user: dict = Depends(get_current_user)):
-    return get_user_watchlist(current_user["id"])
+@app.get("/dashboard/alerts")
+def get_alerts(current_user: dict = Depends(get_current_user)):
+    return get_recent_alerts()
 
-@app.post("/watchlist/{market_id}")
-def add_watchlist_item(market_id: str, current_user: dict = Depends(get_current_user)):
-    success = add_to_watchlist(current_user["id"], market_id)
-    if not success:
-        raise HTTPException(status_code=500, detail="Failed to add to watchlist")
-    return {"message": "Added to watchlist"}
+@app.get("/dashboard/whales")
+def get_whale_activity(current_user: dict = Depends(get_current_user)):
+    """Get recent whale activity (large trades)"""
+    return whale_service.fetch_whale_activity()
 
-@app.delete("/watchlist/{market_id}")
-def remove_watchlist_item(market_id: str, current_user: dict = Depends(get_current_user)):
-    success = remove_from_watchlist(current_user["id"], market_id)
-    if not success:
-        raise HTTPException(status_code=500, detail="Failed to remove from watchlist")
-    return {"message": "Removed from watchlist"}
+@app.get("/dashboard/leaderboard")
+def get_leaderboard(current_user: dict = Depends(get_current_user)):
+    """Get top whale traders by volume"""
+    return whale_service.get_leaderboard()
+
+@app.get("/")
+def read_root():
+    return {"message": "PolyPulse Backend is running"}

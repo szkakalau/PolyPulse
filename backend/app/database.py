@@ -17,7 +17,7 @@ def init_db():
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # Create alerts table
+        # Alerts
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS alerts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -31,7 +31,7 @@ def init_db():
             )
         ''')
 
-        # Create users table
+        # Users
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -41,7 +41,7 @@ def init_db():
             )
         ''')
 
-        # Create watchlists table
+        # Watchlists
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS watchlists (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -50,6 +50,34 @@ def init_db():
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(user_id, market_id),
                 FOREIGN KEY(user_id) REFERENCES users(id)
+            )
+        ''')
+
+        # FCM Tokens
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS fcm_tokens (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                token TEXT UNIQUE NOT NULL,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(user_id) REFERENCES users(id)
+            )
+        ''')
+
+        # Whale Trades
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS whale_trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp INTEGER NOT NULL,
+                maker_address TEXT NOT NULL,
+                market_question TEXT NOT NULL,
+                outcome TEXT NOT NULL,
+                side TEXT NOT NULL,
+                size REAL NOT NULL,
+                price REAL NOT NULL,
+                value_usd REAL NOT NULL,
+                market_slug TEXT,
+                UNIQUE(maker_address, timestamp, market_slug, value_usd)
             )
         ''')
         
@@ -87,24 +115,62 @@ def get_recent_alerts(limit: int = 50) -> List[Dict]:
         cursor.execute('SELECT * FROM alerts ORDER BY timestamp DESC LIMIT ?', (limit,))
         rows = cursor.fetchall()
         conn.close()
-        
-        alerts = []
-        for row in rows:
-            alerts.append({
-                "timestamp": row["timestamp"],
-                "market_question": row["market_question"],
-                "outcome": row["outcome"],
-                "old_price": row["old_price"],
-                "new_price": row["new_price"],
-                "change": row["change"],
-                "message": row["message"]
-            })
-        return alerts
+        return [dict(row) for row in rows]
     except Exception as e:
-        logger.error(f"Failed to fetch alerts from DB: {e}")
+        logger.error(f"Failed to get alerts: {e}")
         return []
 
-def create_user(email: str, password_hash: str) -> Optional[Dict]:
+def save_whale_trade(trade: Dict):
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT OR IGNORE INTO whale_trades (
+                timestamp, maker_address, market_question, outcome, side, size, price, value_usd, market_slug
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            trade['timestamp'],
+            trade['maker_address'],
+            trade['market_question'],
+            trade['outcome'],
+            trade['side'],
+            trade['size'],
+            trade['price'],
+            trade['value_usd'],
+            trade['market_slug']
+        ))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Failed to save whale trade to DB: {e}")
+
+def get_leaderboard_stats(limit: int = 10) -> List[Dict]:
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT 
+                maker_address,
+                SUM(value_usd) as total_volume,
+                COUNT(*) as trade_count,
+                MAX(value_usd) as max_trade_value,
+                SUM(CASE WHEN side = 'BUY' THEN value_usd ELSE 0 END) as buy_volume,
+                SUM(CASE WHEN side = 'SELL' THEN value_usd ELSE 0 END) as sell_volume
+            FROM whale_trades
+            GROUP BY maker_address
+            ORDER BY total_volume DESC
+            LIMIT ?
+        ''', (limit,))
+        
+        rows = cursor.fetchall()
+        conn.close()
+        return [dict(row) for row in rows]
+    except Exception as e:
+        logger.error(f"Failed to get leaderboard stats: {e}")
+        return []
+
+def create_user(email: str, password_hash: str) -> Optional[int]:
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -112,7 +178,7 @@ def create_user(email: str, password_hash: str) -> Optional[Dict]:
         user_id = cursor.lastrowid
         conn.commit()
         conn.close()
-        return {"id": user_id, "email": email}
+        return user_id
     except sqlite3.IntegrityError:
         logger.warning(f"User with email {email} already exists")
         return None
@@ -127,55 +193,9 @@ def get_user_by_email(email: str) -> Optional[Dict]:
         cursor.execute('SELECT * FROM users WHERE email = ?', (email,))
         row = cursor.fetchone()
         conn.close()
-        
         if row:
-            return {
-                "id": row["id"],
-                "email": row["email"],
-                "password_hash": row["password_hash"],
-                "created_at": row["created_at"]
-            }
+            return dict(row)
         return None
     except Exception as e:
-        logger.error(f"Failed to fetch user by email: {e}")
+        logger.error(f"Failed to get user by email: {e}")
         return None
-
-# Watchlist Functions
-def add_to_watchlist(user_id: int, market_id: str) -> bool:
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute('INSERT INTO watchlists (user_id, market_id) VALUES (?, ?)', (user_id, market_id))
-        conn.commit()
-        conn.close()
-        return True
-    except sqlite3.IntegrityError:
-        # Already exists
-        return True
-    except Exception as e:
-        logger.error(f"Failed to add to watchlist: {e}")
-        return False
-
-def remove_from_watchlist(user_id: int, market_id: str) -> bool:
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute('DELETE FROM watchlists WHERE user_id = ? AND market_id = ?', (user_id, market_id))
-        conn.commit()
-        conn.close()
-        return True
-    except Exception as e:
-        logger.error(f"Failed to remove from watchlist: {e}")
-        return False
-
-def get_user_watchlist(user_id: int) -> List[str]:
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute('SELECT market_id FROM watchlists WHERE user_id = ?', (user_id,))
-        rows = cursor.fetchall()
-        conn.close()
-        return [row['market_id'] for row in rows]
-    except Exception as e:
-        logger.error(f"Failed to get watchlist: {e}")
-        return []

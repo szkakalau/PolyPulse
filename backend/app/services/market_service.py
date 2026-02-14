@@ -14,7 +14,9 @@ class MarketService:
                     "active": "true", 
                     "order": "volume",
                     "closed": "false"
-                }
+                },
+                proxies={"http": None, "https": None},
+                headers={"User-Agent": "Mozilla/5.0"}
             )
             response.raise_for_status()
             data = response.json()
@@ -27,7 +29,8 @@ class MarketService:
                         tokens.append(Token(
                             token_id=t.get('token_id', ''),
                             outcome=t.get('outcome', ''),
-                            price=float(t.get('price', 0.0) or 0.0)
+                            price=float(t.get('price', 0.0) or 0.0),
+                            winner=t.get('winner', False)
                         ))
                 
                 markets.append(Market(
@@ -35,11 +38,54 @@ class MarketService:
                     question=item.get('question', ''),
                     tokens=tokens,
                     volume=float(item.get('volume', 0.0) or 0.0),
-                    tags=item.get('tags', [])
+                    tags=item.get('tags') or [],
+                    market_slug=item.get('slug', '')
                 ))
             return markets
         except Exception as e:
             print(f"Error fetching markets: {e}")
+            return []
+
+    def fetch_closed_markets(self, limit: int = 10) -> List[Market]:
+        try:
+            response = requests.get(
+                f"{self.BASE_URL}/markets", 
+                params={
+                    "limit": limit, 
+                    "active": "false", 
+                    "closed": "true",
+                    "order": "volume",
+                    "ascending": "false"
+                },
+                proxies={"http": None, "https": None},
+                headers={"User-Agent": "Mozilla/5.0"}
+            )
+            response.raise_for_status()
+            data = response.json()
+            
+            markets = []
+            for item in data.get('data', []):
+                tokens = []
+                if 'tokens' in item:
+                    for t in item['tokens']:
+                        tokens.append(Token(
+                            token_id=t.get('token_id', ''),
+                            outcome=t.get('outcome', ''),
+                            price=float(t.get('price', 0.0) or 0.0),
+                            winner=t.get('winner', False)
+                        ))
+                
+                markets.append(Market(
+                    condition_id=item.get('condition_id', ''),
+                    question=item.get('question', ''),
+                    tokens=tokens,
+                    volume=float(item.get('volume', 0.0) or 0.0),
+                    tags=item.get('tags') or [],
+                    market_slug=item.get('slug', '')
+                ))
+            return markets
+        except Exception as e:
+            print(f"Error fetching closed markets: {e}")
             return []
 
     def get_market_prices(self, market_id: str):

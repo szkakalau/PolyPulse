@@ -7,22 +7,28 @@ import com.polypulse.app.data.remote.dto.RegisterRequest
 import com.polypulse.app.data.remote.dto.UserResponse
 import retrofit2.http.Body
 import retrofit2.http.DELETE
+import retrofit2.http.Field
+import retrofit2.http.FormUrlEncoded
 import retrofit2.http.GET
 import retrofit2.http.Header
 import retrofit2.http.POST
 import retrofit2.http.Path
 
 interface BackendApi {
-    @GET("alerts")
-    suspend fun getAlerts(): AlertResponse
+    @GET("dashboard/alerts")
+    suspend fun getAlerts(): List<com.polypulse.app.data.remote.dto.AlertDto>
 
-    @POST("auth/register")
+    @POST("register")
     suspend fun register(@Body request: RegisterRequest): UserResponse
 
-    @POST("auth/login")
-    suspend fun login(@Body request: LoginRequest): AuthResponse
+    @FormUrlEncoded
+    @POST("token")
+    suspend fun login(
+        @Field("username") email: String,
+        @Field("password") pass: String
+    ): AuthResponse
 
-    @GET("auth/me")
+    @GET("users/me")
     suspend fun getMe(@Header("Authorization") token: String): UserResponse
 
     @GET("watchlist")
@@ -45,4 +51,19 @@ interface BackendApi {
         @Header("Authorization") token: String,
         @Body request: com.polypulse.app.data.remote.dto.FCMTokenRequest
     ): Unit
+
+    @GET("dashboard/stats")
+    suspend fun getDashboardStats(
+        @Header("Authorization") token: String
+    ): com.polypulse.app.data.remote.dto.DashboardStatsResponse
+
+    @GET("dashboard/whales")
+    suspend fun getWhaleActivity(
+        @Header("Authorization") token: String
+    ): List<com.polypulse.app.data.remote.dto.WhaleActivityDto>
+
+    @GET("dashboard/leaderboard")
+    suspend fun getLeaderboard(
+        @Header("Authorization") token: String
+    ): List<com.polypulse.app.data.remote.dto.LeaderboardDto>
 }

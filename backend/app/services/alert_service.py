@@ -3,7 +3,7 @@ from typing import List, Dict
 from app.models.market import Market
 from datetime import datetime
 from app.services.fcm_service import FCMService
-from app.database import save_alert, get_recent_alerts
+from app.database import save_alert, get_recent_alerts, get_users_watching_market
 
 logger = logging.getLogger(__name__)
 
@@ -48,11 +48,18 @@ class AlertService:
                         save_alert(alert_obj)
                         
                         # Send Push Notification
-                        self.fcm_service.send_to_topic(
-                            topic="alerts",
-                            title="PolyPulse Price Alert",
-                            body=f"{market.question}: {token.outcome} moved to {curr_price:.2f}"
-                        )
+                        # 1. Send to general 'alerts' topic (if broad alert)
+                        # self.fcm_service.send_to_topic(...)
+                        
+                        # 2. Send to specific users watching this market
+                        watching_tokens = get_users_watching_market(market.condition_id)
+                        if watching_tokens:
+                            self.fcm_service.send_multicast(
+                                tokens=watching_tokens,
+                                title="PolyPulse Watchlist Alert",
+                                body=f"Watched Market: {market.question} | {token.outcome} changed to {curr_price:.2f}",
+                                data={"marketId": market.id}
+                            )
             
             # Update cache
             current_prices = {t.outcome: t.price for t in market.tokens}

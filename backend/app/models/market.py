@@ -5,6 +5,7 @@ class Token(BaseModel):
     token_id: str
     outcome: str
     price: float
+    winner: bool = False
 
 class Market(BaseModel):
     condition_id: str
@@ -12,3 +13,4 @@ class Market(BaseModel):
     tokens: List[Token]
     volume: float = 0.0
     tags: List[str] = []
+    market_slug: str = ""

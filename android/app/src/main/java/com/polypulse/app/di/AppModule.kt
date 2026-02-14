@@ -14,10 +14,14 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import retrofit2.Retrofit
 
+import com.polypulse.app.data.repository.DashboardRepository
+
 object AppModule {
     private const val BASE_URL = "https://clob.polymarket.com/"
     // Production Backend URL (Railway)
-    private const val BACKEND_URL = "https://polypulse-production.up.railway.app/"
+    // private const val BACKEND_URL = "https://polypulse-production.up.railway.app/"
+    // Local Emulator Backend URL (10.0.2.2 points to host localhost)
+    private const val BACKEND_URL = "http://10.0.2.2:8000/"
 
     private val json = Json {
         ignoreUnknownKeys = true
@@ -54,6 +58,9 @@ object AppModule {
     @Volatile
     private var watchlistRepository: WatchlistRepository? = null
 
+    @Volatile
+    private var dashboardRepository: DashboardRepository? = null
+
     fun provideAuthRepository(context: Context): AuthRepository {
         return authRepository ?: synchronized(this) {
             val tokenManager = TokenManager(context)
@@ -68,6 +75,15 @@ object AppModule {
             val tokenManager = TokenManager(context)
             val repo = WatchlistRepository(backendApi, tokenManager)
             watchlistRepository = repo
+            repo
+        }
+    }
+
+    fun provideDashboardRepository(context: Context): DashboardRepository {
+        return dashboardRepository ?: synchronized(this) {
+            val tokenManager = TokenManager(context)
+            val repo = DashboardRepository(backendApi, tokenManager)
+            dashboardRepository = repo
             repo
         }
     }

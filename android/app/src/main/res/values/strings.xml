@@ -1,5 +1,6 @@
 <resources>
     <string name="app_name">PolyPulse</string>
+    <string name="app_widget_description">Shows the latest whale trade detected by PolyPulse.</string>
     <string name="market_list_title">PolyPulse Markets</string>
     <string name="search_hint">Search markets...</string>
     <string name="market_details_title">Market Details</string>

@@ -3,11 +3,6 @@ package com.polypulse.app.data.remote.dto
 import kotlinx.serialization.Serializable
 
 @Serializable
-data class AlertResponse(
-    val alerts: List<AlertDto>
-)
-
-@Serializable
 data class AlertDto(
     val timestamp: String,
     val market_question: String,
