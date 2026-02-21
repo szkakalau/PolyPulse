@@ -1,17 +1,17 @@
 package com.polypulse.app.data.repository
 
 import com.polypulse.app.data.auth.TokenManager
-import com.polypulse.app.data.remote.BackendApi
+import com.polypulse.app.data.remote.BackendApiProvider
 import kotlinx.coroutines.flow.first
 
 class WatchlistRepository(
-    private val api: BackendApi,
+    private val apiProvider: BackendApiProvider,
     private val tokenManager: TokenManager
 ) {
     suspend fun getWatchlist(): Result<List<String>> {
         return try {
             val token = tokenManager.token.first() ?: throw Exception("No token found")
-            val watchlist = api.getWatchlist("Bearer $token")
+            val watchlist = apiProvider.call { it.getWatchlist("Bearer $token") }
             Result.success(watchlist)
         } catch (e: Exception) {
             Result.failure(e)
@@ -21,7 +21,7 @@ class WatchlistRepository(
     suspend fun addToWatchlist(marketId: String): Result<Unit> {
         return try {
             val token = tokenManager.token.first() ?: throw Exception("No token found")
-            api.addToWatchlist("Bearer $token", marketId)
+            apiProvider.call { it.addToWatchlist("Bearer $token", marketId) }
             Result.success(Unit)
         } catch (e: Exception) {
             Result.failure(e)
@@ -31,7 +31,7 @@ class WatchlistRepository(
     suspend fun removeFromWatchlist(marketId: String): Result<Unit> {
         return try {
             val token = tokenManager.token.first() ?: throw Exception("No token found")
-            api.removeFromWatchlist("Bearer $token", marketId)
+            apiProvider.call { it.removeFromWatchlist("Bearer $token", marketId) }
             Result.success(Unit)
         } catch (e: Exception) {
             Result.failure(e)

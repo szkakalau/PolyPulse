@@ -84,6 +84,16 @@ def init_db():
             )
         ''')
 
+        cursor.execute(f'''
+            CREATE TABLE IF NOT EXISTS notification_settings (
+                id {pk_type},
+                user_id INTEGER NOT NULL UNIQUE,
+                push_enabled INTEGER NOT NULL DEFAULT 1,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(user_id) REFERENCES users(id)
+            )
+        ''')
+
         # Whale Trades
         cursor.execute(f'''
             CREATE TABLE IF NOT EXISTS whale_trades (
@@ -180,6 +190,7 @@ def init_db():
                 title TEXT NOT NULL,
                 content TEXT NOT NULL,
                 tier_required TEXT NOT NULL DEFAULT 'free',
+                evidence_json TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         ''')
@@ -581,7 +592,7 @@ def get_signals(limit: int = 50, offset: int = 0) -> List[Dict]:
     cursor = conn.cursor()
     execute_sql(cursor,
         '''
-        SELECT id, title, content, tier_required, created_at
+        SELECT id, title, content, tier_required, evidence_json, created_at
         FROM signals
         ORDER BY created_at DESC
         LIMIT ? OFFSET ?
@@ -592,12 +603,36 @@ def get_signals(limit: int = 50, offset: int = 0) -> List[Dict]:
     conn.close()
     return [dict(row) for row in rows]
 
+def create_signal(title: str, content: str, tier_required: str = "free", evidence_json: Optional[str] = None) -> int:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    execute_sql(
+        cursor,
+        '''
+        INSERT INTO signals (title, content, tier_required, evidence_json)
+        VALUES (?, ?, ?, ?)
+        ''',
+        (title, content, tier_required, evidence_json)
+    )
+    conn.commit()
+    signal_id = None
+    try:
+        signal_id = cursor.lastrowid
+    except Exception:
+        pass
+    if IS_POSTGRES and signal_id is None:
+        execute_sql(cursor, 'SELECT LASTVAL() as id')
+        row = cursor.fetchone()
+        signal_id = row["id"] if row else 0
+    conn.close()
+    return int(signal_id or 0)
+
 def get_signal_by_id(signal_id: int) -> Optional[Dict]:
     conn = get_db_connection()
     cursor = conn.cursor()
     execute_sql(cursor,
         '''
-        SELECT id, title, content, tier_required, created_at
+        SELECT id, title, content, tier_required, evidence_json, created_at
         FROM signals
         WHERE id = ?
         ''',
@@ -623,6 +658,42 @@ def upsert_fcm_token(user_id: int, token: str) -> None:
     conn.commit()
     conn.close()
 
+def get_notification_settings(user_id: int) -> Dict[str, Any]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    execute_sql(
+        cursor,
+        '''
+        SELECT push_enabled
+        FROM notification_settings
+        WHERE user_id = ?
+        ''',
+        (user_id,)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return {"push_enabled": True}
+    value = row["push_enabled"]
+    return {"push_enabled": bool(value)}
+
+def set_notification_settings(user_id: int, push_enabled: bool) -> None:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    execute_sql(
+        cursor,
+        '''
+        INSERT INTO notification_settings (user_id, push_enabled, updated_at)
+        VALUES (?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(user_id) DO UPDATE SET
+            push_enabled=excluded.push_enabled,
+            updated_at=CURRENT_TIMESTAMP
+        ''',
+        (user_id, 1 if push_enabled else 0)
+    )
+    conn.commit()
+    conn.close()
+
 def get_fcm_tokens_for_user(user_id: int) -> List[str]:
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -637,6 +708,22 @@ def get_fcm_tokens_for_user(user_id: int) -> List[str]:
     conn.close()
     return [row["token"] for row in rows]
 
+def get_user_ids_with_fcm_tokens() -> List[int]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    execute_sql(
+        cursor,
+        '''
+        SELECT DISTINCT user_id
+        FROM fcm_tokens
+        WHERE user_id IS NOT NULL
+        ORDER BY user_id
+        '''
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return [int(row["user_id"]) for row in rows if row["user_id"] is not None]
+
 def save_analytics_event(user_id: Optional[int], event_name: str, properties: Optional[str]) -> None:
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -646,6 +733,64 @@ def save_analytics_event(user_id: Optional[int], event_name: str, properties: Op
         VALUES (?, ?, ?)
         ''',
         (user_id, event_name, properties)
+    )
+    conn.commit()
+    conn.close()
+
+def get_watchlist(user_id: int) -> List[str]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    execute_sql(
+        cursor,
+        '''
+        SELECT market_id
+        FROM watchlists
+        WHERE user_id = ?
+        ORDER BY created_at DESC
+        ''',
+        (user_id,)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    if not rows:
+        return []
+    return [row["market_id"] for row in rows]
+
+def add_to_watchlist(user_id: int, market_id: str) -> None:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    if IS_POSTGRES:
+        execute_sql(
+            cursor,
+            '''
+            INSERT INTO watchlists (user_id, market_id)
+            VALUES (?, ?)
+            ON CONFLICT (user_id, market_id) DO NOTHING
+            ''',
+            (user_id, market_id)
+        )
+    else:
+        execute_sql(
+            cursor,
+            '''
+            INSERT OR IGNORE INTO watchlists (user_id, market_id)
+            VALUES (?, ?)
+            ''',
+            (user_id, market_id)
+        )
+    conn.commit()
+    conn.close()
+
+def remove_from_watchlist(user_id: int, market_id: str) -> None:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    execute_sql(
+        cursor,
+        '''
+        DELETE FROM watchlists
+        WHERE user_id = ? AND market_id = ?
+        ''',
+        (user_id, market_id)
     )
     conn.commit()
     conn.close()

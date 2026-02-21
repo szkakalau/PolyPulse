@@ -1,0 +1,13 @@
+package com.polypulse.app.data.remote.dto
+
+import kotlinx.serialization.Serializable
+
+@Serializable
+data class NotificationSettingsDto(
+    val enabled: Boolean
+)
+
+@Serializable
+data class NotificationSettingsUpdateRequestDto(
+    val enabled: Boolean
+)

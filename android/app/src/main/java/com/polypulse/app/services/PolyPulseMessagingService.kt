@@ -42,7 +42,8 @@ class PolyPulseMessagingService : FirebaseMessagingService() {
         // Check if message contains a notification payload.
         remoteMessage.notification?.let {
             Log.d(TAG, "Message Notification Body: ${it.body}")
-            sendNotification(it.title, it.body)
+            val signalId = remoteMessage.data["signalId"]
+            sendNotification(it.title, it.body, signalId)
         }
     }
 
@@ -50,9 +51,12 @@ class PolyPulseMessagingService : FirebaseMessagingService() {
         Log.d(TAG, "Short lived task is done.")
     }
 
-    private fun sendNotification(title: String?, messageBody: String?) {
+    private fun sendNotification(title: String?, messageBody: String?, signalId: String?) {
         val intent = Intent(this, MainActivity::class.java)
         intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        if (!signalId.isNullOrBlank()) {
+            intent.putExtra(MainActivity.EXTRA_SIGNAL_ID, signalId)
+        }
         val pendingIntent = PendingIntent.getActivity(
             this, 0, intent,
             PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
@@ -61,7 +65,7 @@ class PolyPulseMessagingService : FirebaseMessagingService() {
         val channelId = "polypulse_alerts_channel"
         val defaultSoundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
         val notificationBuilder = NotificationCompat.Builder(this, channelId)
-            .setSmallIcon(R.mipmap.ic_launcher) // Ensure this resource exists
+            .setSmallIcon(R.drawable.ic_whale) // Ensure this resource exists
             .setContentTitle(title ?: "PolyPulse Alert")
             .setContentText(messageBody)
             .setAutoCancel(true)
@@ -80,7 +84,7 @@ class PolyPulseMessagingService : FirebaseMessagingService() {
             notificationManager.createNotificationChannel(channel)
         }
 
-        notificationManager.notify(0, notificationBuilder.build())
+        notificationManager.notify(System.currentTimeMillis().toInt(), notificationBuilder.build())
     }
 
     companion object {

@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import java.io.File
 
 private val Context.dataStore by preferencesDataStore(name = "auth_prefs")
 
@@ -13,10 +14,16 @@ class TokenManager(private val context: Context) {
     companion object {
         private val TOKEN_KEY = stringPreferencesKey("jwt_token")
         private val FCM_TOKEN_KEY = stringPreferencesKey("fcm_token")
+        @Volatile
+        private var debugTokenOverride: String? = null
+
+        fun setDebugTokenOverride(token: String?) {
+            debugTokenOverride = token?.takeIf { it.isNotBlank() }
+        }
     }
 
     val token: Flow<String?> = context.dataStore.data.map { preferences ->
-        preferences[TOKEN_KEY]
+        debugTokenOverride ?: preferences[TOKEN_KEY] ?: readDebugToken()
     }
 
     val fcmToken: Flow<String?> = context.dataStore.data.map { preferences ->
@@ -26,6 +33,10 @@ class TokenManager(private val context: Context) {
     suspend fun saveToken(token: String) {
         context.dataStore.edit { preferences ->
             preferences[TOKEN_KEY] = token
+        }
+        setDebugTokenOverride(token)
+        runCatching {
+            File(context.filesDir, "debug_token.txt").writeText(token)
         }
     }
 
@@ -39,5 +50,16 @@ class TokenManager(private val context: Context) {
         context.dataStore.edit { preferences ->
             preferences.remove(TOKEN_KEY)
         }
+        setDebugTokenOverride(null)
+        runCatching {
+            File(context.filesDir, "debug_token.txt").delete()
+        }
+    }
+
+    private fun readDebugToken(): String? {
+        val file = File(context.filesDir, "debug_token.txt")
+        if (!file.exists()) return null
+        val token = file.readText().trim()
+        return if (token.isBlank()) null else token
     }
 }

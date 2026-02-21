@@ -7,17 +7,13 @@ import android.content.Intent
 import android.widget.RemoteViews
 import com.polypulse.app.R
 import com.polypulse.app.data.auth.TokenManager
-import com.polypulse.app.data.remote.BackendApi
 import com.polypulse.app.data.remote.dto.WhaleActivityDto
-import com.jakewharton.retrofit2.converter.kotlinx.serialization.asConverterFactory
+import com.polypulse.app.di.AppModule
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.json.Json
-import okhttp3.MediaType.Companion.toMediaType
-import retrofit2.Retrofit
 import java.text.NumberFormat
 import java.util.Locale
 
@@ -25,17 +21,6 @@ import java.util.Locale
  * Implementation of App Widget functionality.
  */
 class WhaleWidget : AppWidgetProvider() {
-
-    // Simple manual DI for the widget since Hilt injection into BroadcastReceiver is tricky
-    // and we want to keep it lightweight.
-    private fun getApi(): BackendApi {
-        val json = Json { ignoreUnknownKeys = true }
-        return Retrofit.Builder()
-            .baseUrl("http://10.0.2.2:8000/") // Android Emulator localhost
-            .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
-            .build()
-            .create(BackendApi::class.java)
-    }
 
     override fun onUpdate(
         context: Context,
@@ -65,8 +50,7 @@ class WhaleWidget : AppWidgetProvider() {
                 val token = tokenManager.token.first()
 
                 if (token != null) {
-                    val api = getApi()
-                    val whales = api.getWhaleActivity("Bearer $token")
+                    val whales = AppModule.backendApiProvider.call { it.getWhaleActivity("Bearer $token") }
                     
                     if (whales.isNotEmpty()) {
                         val latestWhale = whales.first()

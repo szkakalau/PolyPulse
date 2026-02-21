@@ -1,3 +1,4 @@
+import os
 import requests
 import logging
 from typing import List, Dict, Optional
@@ -98,18 +99,39 @@ class WhaleService:
     def _fetch_trades_for_token(self, token_id: str, use_asset_param: bool = False) -> List[Dict]:
         try:
             params = {"asset": token_id} if use_asset_param else {"market": token_id}
-            response = requests.get(
-                self.DATA_API_URL,
-                params=params,
-                proxies={"http": None, "https": None},
-                timeout=5,
-                headers={"User-Agent": "Mozilla/5.0"}
-            )
+            response = self._request_get(self.DATA_API_URL, params=params)
             if response.status_code == 200:
                 return response.json()
         except Exception as e:
             logger.warning(f"Failed to fetch trades for token {token_id}: {e}")
         return []
+
+    def _request_get(self, url: str, params: Dict) -> requests.Response:
+        mode = os.getenv("POLYMARKET_PROXY_MODE", "auto").lower()
+        if mode == "proxy":
+            modes = [True]
+        elif mode == "direct":
+            modes = [False]
+        else:
+            modes = [True, False]
+        last_exc: Optional[Exception] = None
+        for use_proxy in modes:
+            try:
+                session = requests.Session()
+                session.trust_env = use_proxy
+                response = session.get(
+                    url,
+                    params=params,
+                    timeout=5,
+                    headers={"User-Agent": "Mozilla/5.0"}
+                )
+                response.raise_for_status()
+                return response
+            except Exception as e:
+                last_exc = e
+        if last_exc:
+            raise last_exc
+        raise RuntimeError("Request failed")
 
     def get_leaderboard(self, limit: int = 10) -> List[Dict]:
         """

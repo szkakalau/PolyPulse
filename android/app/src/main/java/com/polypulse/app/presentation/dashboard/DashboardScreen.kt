@@ -10,6 +10,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.TrendingUp
 import androidx.compose.material.icons.filled.TrendingDown
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -20,6 +21,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.polypulse.app.data.remote.dto.TopMover
+import com.polypulse.app.data.remote.dto.SmartWalletDto
 import com.polypulse.app.data.remote.dto.WhaleActivityDto
 import java.text.NumberFormat
 import java.util.Locale
@@ -28,7 +30,8 @@ import java.util.Locale
 @Composable
 fun DashboardScreen(
     viewModel: DashboardViewModel,
-    onNavigateToLeaderboard: () -> Unit
+    onNavigateToLeaderboard: () -> Unit,
+    onNavigateToLogin: () -> Unit
 ) {
     val state by viewModel.state
 
@@ -53,40 +56,57 @@ fun DashboardScreen(
                     color = MaterialTheme.colorScheme.error,
                     modifier = Modifier.align(Alignment.Center)
                 )
-            } else if (state.stats != null) {
+            } else {
                 LazyColumn(
                     contentPadding = PaddingValues(16.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    item {
-                        Text(
-                            text = "Overview",
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
+                    if (state.stats != null) {
+                        item {
+                            Text(
+                                text = "Overview",
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
 
-                    item {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(16.dp)
-                        ) {
-                            StatCard(
-                                title = "Alerts (24h)",
-                                value = state.stats!!.alerts_24h.toString(),
-                                modifier = Modifier.weight(1f),
-                                color = MaterialTheme.colorScheme.primaryContainer
-                            )
-                            StatCard(
-                                title = "Watchlist",
-                                value = state.stats!!.watchlist_count.toString(),
-                                modifier = Modifier.weight(1f),
-                                color = MaterialTheme.colorScheme.secondaryContainer
-                            )
+                        item {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(16.dp)
+                            ) {
+                                StatCard(
+                                    title = "Alerts (24h)",
+                                    value = state.stats!!.alerts_24h.toString(),
+                                    modifier = Modifier.weight(1f),
+                                    color = MaterialTheme.colorScheme.primaryContainer
+                                )
+                                StatCard(
+                                    title = "Watchlist",
+                                    value = state.stats!!.watchlist_count.toString(),
+                                    modifier = Modifier.weight(1f),
+                                    color = MaterialTheme.colorScheme.secondaryContainer
+                                )
+                            }
+                        }
+                    } else {
+                        item {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Login to see personal stats",
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                                Button(onClick = onNavigateToLogin) {
+                                    Text("Login")
+                                }
+                            }
                         }
                     }
 
-                    // Leaderboard Button
                     item {
                         Button(
                             onClick = onNavigateToLeaderboard,
@@ -99,14 +119,13 @@ fun DashboardScreen(
                         }
                     }
 
-                    // Whale Radar Section
                     item {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier.padding(top = 8.dp)
                         ) {
                              Icon(
-                                Icons.Default.Warning, 
+                                Icons.Default.Warning,
                                 contentDescription = "Whale",
                                 tint = MaterialTheme.colorScheme.primary
                             )
@@ -133,17 +152,19 @@ fun DashboardScreen(
                         }
                     }
 
-                    item {
-                        Text(
-                            text = "Top Movers (24h)",
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(top = 16.dp)
-                        )
-                    }
+                    if (state.stats != null) {
+                        item {
+                            Text(
+                                text = "Top Movers (24h)",
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(top = 16.dp)
+                            )
+                        }
 
-                    items(state.stats!!.top_movers) { mover ->
-                        TopMoverItem(mover)
+                        items(state.stats!!.top_movers) { mover ->
+                            TopMoverItem(mover)
+                        }
                     }
                 }
             }
@@ -275,6 +296,151 @@ fun TopMoverItem(mover: TopMover) {
                     color = if (mover.change > 0) Color.Green else Color.Red
                 )
             }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun WhaleListScreen(
+    viewModel: WhaleListViewModel
+) {
+    val state by viewModel.state
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Whales") },
+                actions = {
+                    IconButton(onClick = { viewModel.loadWhales() }) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Refresh")
+                    }
+                }
+            )
+        }
+    ) { padding ->
+        Box(modifier = Modifier.padding(padding).fillMaxSize()) {
+            when {
+                state.isLoading -> {
+                    CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+                }
+                state.error != null -> {
+                    Text(
+                        text = state.error ?: "",
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.align(Alignment.Center)
+                    )
+                }
+                state.whales.isEmpty() -> {
+                    Text(
+                        text = "No whale trades yet.",
+                        modifier = Modifier.align(Alignment.Center)
+                    )
+                }
+                else -> {
+                    LazyColumn(
+                        contentPadding = PaddingValues(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        items(state.whales) { whale ->
+                            WhaleActivityItem(whale)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SmartMoneyScreen(
+    viewModel: SmartMoneyViewModel
+) {
+    val state by viewModel.state
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Smart Money") },
+                actions = {
+                    IconButton(onClick = { viewModel.loadSmartMoney() }) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Refresh")
+                    }
+                }
+            )
+        }
+    ) { padding ->
+        Box(modifier = Modifier.padding(padding).fillMaxSize()) {
+            when {
+                state.isLoading -> {
+                    CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+                }
+                state.error != null -> {
+                    Text(
+                        text = state.error ?: "",
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.align(Alignment.Center)
+                    )
+                }
+                state.wallets.isEmpty() -> {
+                    Text(
+                        text = "No smart wallets yet.",
+                        modifier = Modifier.align(Alignment.Center)
+                    )
+                }
+                else -> {
+                    LazyColumn(
+                        contentPadding = PaddingValues(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        items(state.wallets) { wallet ->
+                            SmartMoneyItem(wallet)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun SmartMoneyItem(wallet: SmartWalletDto) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Column(
+            modifier = Modifier.padding(12.dp)
+        ) {
+            Text(
+                text = wallet.address,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = NumberFormat.getCurrencyInstance(Locale.US).format(wallet.profit),
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = "Win ${(wallet.win_rate * 100).toInt()}%",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = "ROI ${String.format("%.2f%%", wallet.roi * 100)}",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "${wallet.total_trades} trades",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }

@@ -4,13 +4,14 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import com.polypulse.app.data.remote.dto.LeaderboardDto
+import com.polypulse.app.data.remote.dto.SmartWalletDto
 import com.polypulse.app.data.repository.DashboardRepository
 import kotlinx.coroutines.launch
 
 data class LeaderboardState(
-    val leaderboard: List<LeaderboardDto> = emptyList(),
+    val leaderboard: List<SmartWalletDto> = emptyList(),
     val isLoading: Boolean = false,
     val error: String? = null
 )
@@ -29,7 +30,7 @@ class LeaderboardViewModel(
     fun loadLeaderboard() {
         viewModelScope.launch {
             state = state.copy(isLoading = true, error = null)
-            val result = dashboardRepository.getLeaderboard()
+            val result = dashboardRepository.getSmartWallets()
             
             result.onSuccess { items ->
                 state = state.copy(

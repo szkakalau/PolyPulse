@@ -59,12 +59,14 @@ dependencies {
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material:material:1.5.4") // For PullRefresh
+    implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.compose.material3:material3")
     
     // Networking
     implementation("com.squareup.retrofit2:retrofit:2.9.0")
     implementation("com.jakewharton.retrofit:retrofit2-kotlinx-serialization-converter:1.0.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.squareup.okhttp3:okhttp-dnsoverhttps:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.0")
 
     // Image Loading

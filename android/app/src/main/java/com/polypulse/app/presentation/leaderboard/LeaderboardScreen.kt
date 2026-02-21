@@ -16,7 +16,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.polypulse.app.data.remote.dto.LeaderboardDto
+import com.polypulse.app.data.remote.dto.SmartWalletDto
 import java.text.NumberFormat
 import java.util.Locale
 
@@ -94,7 +94,7 @@ fun LeaderboardHeader() {
             color = Color.Gray
         )
         Text(
-            text = "Volume",
+            text = "Profit",
             modifier = Modifier.width(100.dp),
             fontWeight = FontWeight.Bold,
             textAlign = TextAlign.End,
@@ -105,7 +105,7 @@ fun LeaderboardHeader() {
 }
 
 @Composable
-fun LeaderboardItem(rank: Int, item: LeaderboardDto) {
+fun LeaderboardItem(rank: Int, item: SmartWalletDto) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
@@ -128,12 +128,12 @@ fun LeaderboardItem(rank: Int, item: LeaderboardDto) {
             
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = formatAddress(item.maker_address),
+                    text = formatAddress(item.address),
                     fontWeight = FontWeight.SemiBold,
                     style = MaterialTheme.typography.bodyLarge
                 )
                 Text(
-                    text = "${item.trade_count} trades",
+                    text = "${item.total_trades} trades • ${formatPercent(item.win_rate)} win",
                     style = MaterialTheme.typography.bodySmall,
                     color = Color.Gray
                 )
@@ -141,12 +141,12 @@ fun LeaderboardItem(rank: Int, item: LeaderboardDto) {
             
             Column(horizontalAlignment = Alignment.End) {
                 Text(
-                    text = formatCurrency(item.total_volume),
+                    text = formatCurrency(item.profit),
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.primary
                 )
                 Text(
-                    text = "Max: ${formatCurrency(item.max_trade_value)}",
+                    text = "ROI: ${formatPercent(item.roi)}",
                     style = MaterialTheme.typography.bodySmall,
                     color = Color.Gray
                 )
@@ -162,4 +162,8 @@ fun formatAddress(address: String): String {
 
 fun formatCurrency(amount: Double): String {
     return NumberFormat.getCurrencyInstance(Locale.US).format(amount)
+}
+
+fun formatPercent(value: Double): String {
+    return String.format("%.2f%%", value * 100)
 }

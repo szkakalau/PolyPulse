@@ -1,24 +1,49 @@
+import os
 import requests
-from typing import List, Dict
+from typing import List, Dict, Optional
 from app.models.market import Market, Token
 
 class MarketService:
     BASE_URL = "https://clob.polymarket.com"
 
+    def _request_get(self, url: str, params: Dict) -> requests.Response:
+        mode = os.getenv("POLYMARKET_PROXY_MODE", "auto").lower()
+        if mode == "proxy":
+            modes = [True]
+        elif mode == "direct":
+            modes = [False]
+        else:
+            modes = [True, False]
+        last_exc: Optional[Exception] = None
+        for use_proxy in modes:
+            try:
+                session = requests.Session()
+                session.trust_env = use_proxy
+                response = session.get(
+                    url,
+                    params=params,
+                    headers={"User-Agent": "Mozilla/5.0"},
+                    timeout=10
+                )
+                response.raise_for_status()
+                return response
+            except Exception as e:
+                last_exc = e
+        if last_exc:
+            raise last_exc
+        raise RuntimeError("Request failed")
+
     def fetch_active_markets(self, limit: int = 50) -> List[Market]:
         try:
-            response = requests.get(
-                f"{self.BASE_URL}/markets", 
+            response = self._request_get(
+                f"{self.BASE_URL}/markets",
                 params={
-                    "limit": limit, 
-                    "active": "true", 
+                    "limit": limit,
+                    "active": "true",
                     "order": "volume",
                     "closed": "false"
-                },
-                proxies={"http": None, "https": None},
-                headers={"User-Agent": "Mozilla/5.0"}
+                }
             )
-            response.raise_for_status()
             data = response.json()
             
             markets = []
@@ -48,19 +73,16 @@ class MarketService:
 
     def fetch_closed_markets(self, limit: int = 10) -> List[Market]:
         try:
-            response = requests.get(
-                f"{self.BASE_URL}/markets", 
+            response = self._request_get(
+                f"{self.BASE_URL}/markets",
                 params={
-                    "limit": limit, 
-                    "active": "false", 
+                    "limit": limit,
+                    "active": "false",
                     "closed": "true",
                     "order": "volume",
                     "ascending": "false"
-                },
-                proxies={"http": None, "https": None},
-                headers={"User-Agent": "Mozilla/5.0"}
+                }
             )
-            response.raise_for_status()
             data = response.json()
             
             markets = []

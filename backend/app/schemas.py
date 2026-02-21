@@ -59,6 +59,14 @@ class BillingWebhookRequest(BaseModel):
     startAt: Optional[str] = None
     endAt: Optional[str] = None
 
+class SignalEvidence(BaseModel):
+    sourceType: str
+    triggeredAt: str
+    marketId: str
+    makerAddress: str
+    evidenceUrl: str
+    dedupeKey: str
+
 class SignalResponse(BaseModel):
     id: int
     title: str
@@ -66,6 +74,7 @@ class SignalResponse(BaseModel):
     locked: bool
     tierRequired: str
     createdAt: str
+    evidence: Optional[SignalEvidence] = None
 
 class PaywallPlan(BaseModel):
     id: str
@@ -89,6 +98,12 @@ class NotificationRegisterRequest(BaseModel):
 class NotificationSendRequest(BaseModel):
     userId: int
     signalId: int
+
+class NotificationSettingsResponse(BaseModel):
+    enabled: bool
+
+class NotificationSettingsUpdateRequest(BaseModel):
+    enabled: bool
 
 class AnalyticsEventRequest(BaseModel):
     eventName: str
@@ -120,3 +135,14 @@ class MetricsResponse(BaseModel):
     signals: int
     alerts: int
     daily_pulse: int
+
+class MonitorAlertRequest(BaseModel):
+    level: str
+    message: str
+    source: Optional[str] = None
+
+class AdminSignalCreateRequest(BaseModel):
+    title: str
+    content: str
+    tierRequired: str = "free"
+    broadcast: bool = False

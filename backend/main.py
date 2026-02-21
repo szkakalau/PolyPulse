@@ -5,11 +5,11 @@ import os
 import redis
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from apscheduler.schedulers.background import BackgroundScheduler
-from typing import List
+from typing import List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy import func
@@ -25,9 +25,16 @@ from app.database import (
     get_transaction_user_id,
     get_signals,
     get_signal_by_id,
+    create_signal,
     upsert_fcm_token,
     get_fcm_tokens_for_user,
+    get_user_ids_with_fcm_tokens,
+    get_notification_settings,
+    set_notification_settings,
     save_analytics_event,
+    get_watchlist,
+    add_to_watchlist,
+    remove_from_watchlist,
     get_daily_pulse,
     get_referral_code,
     insert_referral_code,
@@ -62,13 +69,17 @@ from app.schemas import (
     TrialStartResponse,
     NotificationRegisterRequest,
     NotificationSendRequest,
+    NotificationSettingsResponse,
+    NotificationSettingsUpdateRequest,
     AnalyticsEventRequest,
     DailyPulseResponse,
     ReferralCodeResponse,
     ReferralRedeemRequest,
     ReferralRedeemResponse,
     FeatureFlagResponse,
-    MetricsResponse
+    MetricsResponse,
+    MonitorAlertRequest,
+    AdminSignalCreateRequest
 )
 
 # Configure logging
@@ -292,6 +303,9 @@ def deliver_notification(user_id: int, signal_id: int) -> bool:
     signal = get_signal_by_id(signal_id)
     if not signal:
         return False
+    settings = get_notification_settings(user_id)
+    if not settings.get("push_enabled", True):
+        return False
     tokens = get_fcm_tokens_for_user(user_id)
     if not tokens:
         return False
@@ -314,7 +328,7 @@ def process_notification_queue():
     if not redis_client:
         return
     now_ts = datetime.utcnow().timestamp()
-    jobs = redis_client.zrangebyscore(redis_queue_key, 0, now_ts, start=0, num=20)
+    jobs = redis_client.zrangebyscore(redis_queue_key, 0, now_ts, start=0, num=200)
     if not jobs:
         return
     redis_client.zrem(redis_queue_key, *jobs)
@@ -341,7 +355,10 @@ async def lifespan(app: FastAPI):
 
     scheduler.add_job(refresh_polymarket_data, 'interval', minutes=1)
     scheduler.add_job(expire_trials, 'interval', hours=24)
-    scheduler.add_job(process_notification_queue, 'interval', seconds=30)
+    scheduler.add_job(process_notification_queue, 'interval', seconds=5)
+    auto_interval = int(os.environ.get("AUTO_SIGNAL_BROADCAST_INTERVAL_SECONDS") or "0")
+    if auto_interval > 0:
+        scheduler.add_job(generate_demo_signal_and_broadcast, 'interval', seconds=auto_interval)
     
     scheduler.start()
     
@@ -352,6 +369,8 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(refresh_polymarket_data)
     scheduler.add_job(expire_trials)
     scheduler.add_job(process_notification_queue)
+    if auto_interval > 0:
+        scheduler.add_job(generate_demo_signal_and_broadcast)
     
     yield
     
@@ -409,6 +428,13 @@ def _duration_days_for_plan(plan_id: str) -> int:
         return 365
     return 30
 
+def _normalize_subscription_status(status_value: str) -> str:
+    normalized = (status_value or "").strip().lower()
+    if normalized == "cancelled":
+        return "canceled"
+    allowed = {"active", "grace", "expired", "canceled", "paused"}
+    return normalized if normalized in allowed else "active"
+
 def _build_entitlements_response(tier: str) -> EntitlementsResponse:
     rows = get_entitlements_for_tier(tier)
     features = [
@@ -431,6 +457,76 @@ def _resolve_tier_for_user(user_id: int) -> str:
     except Exception:
         return entitlement["tier"]
     return "free"
+
+def _is_signal_locked(required_tier: str, user_tier: str) -> bool:
+    required = (required_tier or "free").strip().lower()
+    tier = (user_tier or "free").strip().lower()
+    if required == "free":
+        return False
+    return tier != "pro"
+
+def _notification_delay_seconds(signal_required_tier: str, user_tier: str) -> int:
+    return 300 if _is_signal_locked(signal_required_tier, user_tier) else 0
+
+def _require_admin(request: Request, admin_key: Optional[str]) -> None:
+    expected = os.environ.get("ADMIN_API_KEY")
+    if expected:
+        if not admin_key or admin_key != expected:
+            raise HTTPException(status_code=403, detail="Forbidden")
+        return
+    host = request.client.host if request.client else ""
+    if host not in ("127.0.0.1", "::1", "localhost"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+def _broadcast_signal_to_users(signal_id: int) -> dict:
+    signal = get_signal_by_id(signal_id)
+    if not signal:
+        return {"status": "not_found"}
+    user_ids = get_user_ids_with_fcm_tokens()
+    queued = 0
+    delayed = 0
+    sent = 0
+    skipped = 0
+    for user_id in user_ids:
+        settings = get_notification_settings(user_id)
+        if not settings.get("push_enabled", True):
+            skipped += 1
+            continue
+        tier = _resolve_tier_for_user(user_id)
+        delay_seconds = _notification_delay_seconds(signal["tier_required"], tier)
+        if redis_client:
+            deliver_at = datetime.utcnow() + timedelta(seconds=delay_seconds)
+            enqueue_notification_job(user_id, signal_id, deliver_at)
+            if delay_seconds > 0:
+                delayed += 1
+            else:
+                queued += 1
+            continue
+        if delay_seconds > 0:
+            skipped += 1
+            continue
+        if deliver_notification(user_id, signal_id):
+            sent += 1
+        else:
+            skipped += 1
+    return {
+        "status": "ok",
+        "users": len(user_ids),
+        "queued": queued,
+        "delayed": delayed,
+        "sent": sent,
+        "skipped": skipped
+    }
+
+def generate_demo_signal_and_broadcast() -> dict:
+    now = datetime.utcnow()
+    title = f"Daily Pulse {now.strftime('%Y-%m-%d %H:%M UTC')}"
+    content = "Top moves and whale activity. Unlock for details."
+    tier_required = "pro"
+    signal_id = create_signal(title, content, tier_required)
+    save_analytics_event(None, "signal_generated", json.dumps({"signalId": signal_id, "tier": tier_required}))
+    broadcast = _broadcast_signal_to_users(signal_id)
+    return {"status": "created", "signalId": signal_id, "broadcast": broadcast}
 
 @app.post("/register", response_model=UserResponse)
 def register(user: UserRegister):
@@ -480,6 +576,20 @@ def get_dashboard_stats(current_user: dict = Depends(get_current_user)):
 @app.get("/dashboard/alerts")
 def get_alerts(current_user: dict = Depends(get_current_user)):
     return get_recent_alerts()
+
+@app.get("/watchlist")
+def watchlist_get(current_user: dict = Depends(get_current_user)):
+    return get_watchlist(current_user["id"])
+
+@app.post("/watchlist/{market_id}")
+def watchlist_add(market_id: str, current_user: dict = Depends(get_current_user)):
+    add_to_watchlist(current_user["id"], market_id)
+    return {"status": "ok"}
+
+@app.delete("/watchlist/{market_id}")
+def watchlist_remove(market_id: str, current_user: dict = Depends(get_current_user)):
+    remove_from_watchlist(current_user["id"], market_id)
+    return {"status": "ok"}
 
 @app.get("/dashboard/whales")
 def get_whale_activity(current_user: dict = Depends(get_current_user)):
@@ -594,7 +704,10 @@ def get_signals_api(
     response = []
     for row in rows:
         required = row["tier_required"]
-        locked = required != "free" and tier != "pro"
+        locked = _is_signal_locked(required, tier)
+        evidence = None
+        if row["evidence_json"]:
+            evidence = SignalEvidence(**json.loads(row["evidence_json"]))
         response.append(
             SignalResponse(
                 id=row["id"],
@@ -602,7 +715,8 @@ def get_signals_api(
                 content=None if locked else row["content"],
                 locked=locked,
                 tierRequired=required,
-                createdAt=row["created_at"]
+                createdAt=row["created_at"],
+                evidence=evidence
             )
         )
     return response
@@ -611,6 +725,7 @@ def get_signals_api(
 @app.get("/signals/{signal_id}", response_model=SignalResponse)
 def get_signal_detail(
     signal_id: int,
+    requireUnlocked: bool = False,
     current_user: dict = Depends(get_optional_user)
 ):
     row = get_signal_by_id(signal_id)
@@ -622,21 +737,29 @@ def get_signal_detail(
         user_id = current_user["id"]
         tier = _resolve_tier_for_user(user_id)
     required = row["tier_required"]
-    locked = required != "free" and tier != "pro"
+    locked = _is_signal_locked(required, tier)
+    if locked and requireUnlocked:
+        raise HTTPException(status_code=402, detail="Payment required")
     properties = json.dumps({"signalId": signal_id, "locked": locked})
     save_analytics_event(user_id, "signal_view", properties)
+    evidence = None
+    if row["evidence_json"]:
+        evidence = SignalEvidence(**json.loads(row["evidence_json"]))
     return SignalResponse(
         id=row["id"],
         title=row["title"],
         content=None if locked else row["content"],
         locked=locked,
         tierRequired=required,
-        createdAt=row["created_at"]
+        createdAt=row["created_at"],
+        evidence=evidence
     )
 
 
 @app.get("/paywall", response_model=PaywallResponse)
-def get_paywall():
+def get_paywall(current_user: dict = Depends(get_optional_user)):
+    user_id = current_user["id"] if current_user else None
+    save_analytics_event(user_id, "paywall_view", None)
     plans = [
         PaywallPlan(id="free", name="Free", price=0, currency="CNY", period="month", trialDays=0),
         PaywallPlan(id="pro_monthly", name="Pro Monthly", price=49, currency="CNY", period="month", trialDays=7),
@@ -669,6 +792,19 @@ def register_notifications(
     upsert_fcm_token(current_user["id"], payload.token)
     return {"status": "ok"}
 
+@app.get("/notification-settings", response_model=NotificationSettingsResponse)
+def get_notification_settings_api(current_user: dict = Depends(get_current_user)):
+    settings = get_notification_settings(current_user["id"])
+    return NotificationSettingsResponse(enabled=bool(settings.get("push_enabled", True)))
+
+@app.put("/notification-settings", response_model=NotificationSettingsResponse)
+def update_notification_settings_api(
+    payload: NotificationSettingsUpdateRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    set_notification_settings(current_user["id"], payload.enabled)
+    return NotificationSettingsResponse(enabled=payload.enabled)
+
 
 @app.post("/notifications/send")
 def send_notification(
@@ -679,9 +815,7 @@ def send_notification(
     if not signal:
         raise HTTPException(status_code=404, detail="Signal not found")
     target_tier = _resolve_tier_for_user(payload.userId)
-    delay_seconds = 0
-    if target_tier != "pro" and signal["tier_required"] != "free":
-        delay_seconds = 300
+    delay_seconds = _notification_delay_seconds(signal["tier_required"], target_tier)
     if redis_client:
         deliver_at = datetime.utcnow() + timedelta(seconds=delay_seconds)
         enqueue_notification_job(payload.userId, payload.signalId, deliver_at)
@@ -690,6 +824,38 @@ def send_notification(
         return {"status": "delayed"}
     sent = deliver_notification(payload.userId, payload.signalId)
     return {"status": "sent" if sent else "no_tokens"}
+
+@app.post("/admin/signals")
+def admin_create_signal(
+    payload: AdminSignalCreateRequest,
+    request: Request,
+    x_admin_key: Optional[str] = Header(default=None, alias="X-Admin-Key")
+):
+    _require_admin(request, x_admin_key)
+    signal_id = create_signal(payload.title, payload.content, payload.tierRequired)
+    result = {"status": "created", "signalId": signal_id}
+    if payload.broadcast:
+        result["broadcast"] = admin_broadcast_signal(signal_id, request, x_admin_key)
+    return result
+
+@app.post("/admin/signals/{signal_id}/broadcast")
+def admin_broadcast_signal(
+    signal_id: int,
+    request: Request,
+    x_admin_key: Optional[str] = Header(default=None, alias="X-Admin-Key")
+):
+    _require_admin(request, x_admin_key)
+    if not get_signal_by_id(signal_id):
+        raise HTTPException(status_code=404, detail="Signal not found")
+    return _broadcast_signal_to_users(signal_id)
+
+@app.post("/admin/auto-signal/trigger")
+def admin_trigger_auto_signal(
+    request: Request,
+    x_admin_key: Optional[str] = Header(default=None, alias="X-Admin-Key")
+):
+    _require_admin(request, x_admin_key)
+    return generate_demo_signal_and_broadcast()
 
 
 @app.post("/analytics/event")
@@ -846,6 +1012,11 @@ def verify_billing(
 ):
     user_id = current_user["id"]
     plan_id = _plan_from_product_id(request.productId)
+    save_analytics_event(
+        user_id,
+        "subscribe_verify",
+        json.dumps({"platform": request.platform, "productId": request.productId, "planId": plan_id})
+    )
     start_at = datetime.utcnow()
     end_at = start_at + timedelta(days=_duration_days_for_plan(plan_id))
     start_at_str = start_at.isoformat()
@@ -897,7 +1068,7 @@ def billing_status(current_user: dict = Depends(get_current_user)):
     subscription = get_latest_subscription(current_user["id"])
     if not subscription:
         return BillingStatusResponse(status="none")
-    status_value = subscription["status"]
+    status_value = _normalize_subscription_status(subscription["status"])
     try:
         end_at = datetime.fromisoformat(subscription["end_at"])
         if status_value in ["active", "grace"] and end_at < datetime.utcnow():
@@ -925,33 +1096,39 @@ def billing_webhook(payload: BillingWebhookRequest):
     user_id = get_transaction_user_id(order_id)
     if not user_id:
         return {"status": "ignored"}
-    if payload.status and payload.startAt and payload.endAt:
-        existing = get_latest_subscription(user_id)
-        plan_id = existing["plan_id"] if existing else "pro_monthly"
-        upsert_subscription(
+    if not payload.status:
+        return {"status": "ignored"}
+    normalized_status = _normalize_subscription_status(payload.status)
+    existing = get_latest_subscription(user_id)
+    if not existing:
+        return {"status": "ignored"}
+    start_at = payload.startAt or existing["start_at"]
+    end_at = payload.endAt or existing["end_at"]
+    auto_renew = normalized_status == "active"
+    upsert_subscription(
+        user_id=user_id,
+        platform="google_play",
+        plan_id=existing["plan_id"],
+        status=normalized_status,
+        start_at=start_at,
+        end_at=end_at,
+        auto_renew=auto_renew
+    )
+    if normalized_status in ["active", "grace"]:
+        set_user_entitlements(
             user_id=user_id,
-            platform="google_play",
-            plan_id=plan_id,
-            status=payload.status,
-            start_at=payload.startAt,
-            end_at=payload.endAt,
-            auto_renew=payload.status == "active"
+            tier="pro",
+            effective_at=start_at,
+            expires_at=end_at
         )
-        if payload.status in ["active", "grace"]:
-            set_user_entitlements(
-                user_id=user_id,
-                tier="pro",
-                effective_at=payload.startAt,
-                expires_at=payload.endAt
-            )
-        else:
-            now_str = datetime.utcnow().isoformat()
-            set_user_entitlements(
-                user_id=user_id,
-                tier="free",
-                effective_at=now_str,
-                expires_at=now_str
-            )
+    else:
+        now_str = datetime.utcnow().isoformat()
+        set_user_entitlements(
+            user_id=user_id,
+            tier="free",
+            effective_at=now_str,
+            expires_at=now_str
+        )
     return {"status": "ok"}
 
 @app.get("/")
@@ -962,3 +1139,17 @@ def read_root():
 @app.get("/health")
 def health_check():
     return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
+
+
+@app.post("/monitor/alert")
+def monitor_alert(payload: MonitorAlertRequest):
+    level = payload.level.strip().lower()
+    message = payload.message
+    source = payload.source or "unknown"
+    if level == "error":
+        logger.error(f"[monitor:{source}] {message}")
+    elif level == "warn" or level == "warning":
+        logger.warning(f"[monitor:{source}] {message}")
+    else:
+        logger.info(f"[monitor:{source}] {message}")
+    return {"status": "ok"}
