@@ -1,26 +1,46 @@
 import sqlite3
 import logging
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 import os
+
+try:
+    import psycopg2
+    import psycopg2.extras
+except ImportError:
+    psycopg2 = None
 
 logger = logging.getLogger(__name__)
 
 DB_PATH = "polypulse.db"
+DATABASE_URL = os.environ.get("DATABASE_URL")
+if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
+IS_POSTGRES = bool(DATABASE_URL) and (psycopg2 is not None)
 
 def get_db_connection():
+    if IS_POSTGRES:
+        return psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
+def execute_sql(cursor, query: str, params: tuple = ()) -> None:
+    if IS_POSTGRES:
+        query = query.replace("?", "%s")
+    cursor.execute(query, params)
 
 def init_db():
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
         
+        pk_type = "SERIAL PRIMARY KEY" if IS_POSTGRES else "INTEGER PRIMARY KEY AUTOINCREMENT"
+        
         # Alerts
-        cursor.execute('''
+        cursor.execute(f'''
             CREATE TABLE IF NOT EXISTS alerts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {pk_type},
                 timestamp TEXT NOT NULL,
                 market_question TEXT NOT NULL,
                 outcome TEXT NOT NULL,
@@ -32,9 +52,9 @@ def init_db():
         ''')
 
         # Users
-        cursor.execute('''
+        cursor.execute(f'''
             CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {pk_type},
                 email TEXT UNIQUE NOT NULL,
                 password_hash TEXT NOT NULL,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -42,9 +62,9 @@ def init_db():
         ''')
 
         # Watchlists
-        cursor.execute('''
+        cursor.execute(f'''
             CREATE TABLE IF NOT EXISTS watchlists (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {pk_type},
                 user_id INTEGER NOT NULL,
                 market_id TEXT NOT NULL,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -54,9 +74,9 @@ def init_db():
         ''')
 
         # FCM Tokens
-        cursor.execute('''
+        cursor.execute(f'''
             CREATE TABLE IF NOT EXISTS fcm_tokens (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {pk_type},
                 user_id INTEGER,
                 token TEXT UNIQUE NOT NULL,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -65,9 +85,9 @@ def init_db():
         ''')
 
         # Whale Trades
-        cursor.execute('''
+        cursor.execute(f'''
             CREATE TABLE IF NOT EXISTS whale_trades (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {pk_type},
                 timestamp INTEGER NOT NULL,
                 maker_address TEXT NOT NULL,
                 market_question TEXT NOT NULL,
@@ -81,9 +101,10 @@ def init_db():
             )
         ''')
 
-        cursor.execute('''
+        # Subscriptions
+        cursor.execute(f'''
             CREATE TABLE IF NOT EXISTS subscriptions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {pk_type},
                 user_id INTEGER NOT NULL,
                 platform TEXT NOT NULL,
                 plan_id TEXT NOT NULL,
@@ -97,9 +118,10 @@ def init_db():
             )
         ''')
 
-        cursor.execute('''
+        # Entitlements
+        cursor.execute(f'''
             CREATE TABLE IF NOT EXISTS entitlements (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {pk_type},
                 tier TEXT NOT NULL,
                 feature_key TEXT NOT NULL,
                 is_enabled INTEGER NOT NULL DEFAULT 1,
@@ -109,9 +131,10 @@ def init_db():
             )
         ''')
 
-        cursor.execute('''
+        # Feature Flags
+        cursor.execute(f'''
             CREATE TABLE IF NOT EXISTS feature_flags (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {pk_type},
                 feature_key TEXT NOT NULL,
                 enabled INTEGER NOT NULL DEFAULT 0,
                 tier TEXT NOT NULL,
@@ -120,9 +143,10 @@ def init_db():
             )
         ''')
 
-        cursor.execute('''
+        # User Entitlements
+        cursor.execute(f'''
             CREATE TABLE IF NOT EXISTS user_entitlements (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {pk_type},
                 user_id INTEGER NOT NULL,
                 tier TEXT NOT NULL,
                 effective_at TEXT NOT NULL,
@@ -131,9 +155,10 @@ def init_db():
             )
         ''')
 
-        cursor.execute('''
+        # Transactions
+        cursor.execute(f'''
             CREATE TABLE IF NOT EXISTS transactions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {pk_type},
                 user_id INTEGER NOT NULL,
                 platform TEXT NOT NULL,
                 order_id TEXT NOT NULL,
@@ -148,9 +173,10 @@ def init_db():
             )
         ''')
 
-        cursor.execute('''
+        # Signals
+        cursor.execute(f'''
             CREATE TABLE IF NOT EXISTS signals (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {pk_type},
                 title TEXT NOT NULL,
                 content TEXT NOT NULL,
                 tier_required TEXT NOT NULL DEFAULT 'free',
@@ -158,9 +184,10 @@ def init_db():
             )
         ''')
 
-        cursor.execute('''
+        # Daily Pulse
+        cursor.execute(f'''
             CREATE TABLE IF NOT EXISTS daily_pulse (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {pk_type},
                 title TEXT NOT NULL,
                 summary TEXT NOT NULL,
                 content TEXT NOT NULL,
@@ -168,9 +195,10 @@ def init_db():
             )
         ''')
 
-        cursor.execute('''
+        # Analytics Events
+        cursor.execute(f'''
             CREATE TABLE IF NOT EXISTS analytics_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {pk_type},
                 user_id INTEGER,
                 event_name TEXT NOT NULL,
                 properties TEXT,
@@ -178,9 +206,10 @@ def init_db():
             )
         ''')
 
-        cursor.execute('''
+        # Referral Codes
+        cursor.execute(f'''
             CREATE TABLE IF NOT EXISTS referral_codes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {pk_type},
                 user_id INTEGER NOT NULL,
                 code TEXT NOT NULL UNIQUE,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -188,9 +217,10 @@ def init_db():
             )
         ''')
 
-        cursor.execute('''
+        # Referral Redemptions
+        cursor.execute(f'''
             CREATE TABLE IF NOT EXISTS referral_redemptions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id {pk_type},
                 code TEXT NOT NULL,
                 referrer_user_id INTEGER NOT NULL,
                 referee_user_id INTEGER NOT NULL UNIQUE,
@@ -200,12 +230,14 @@ def init_db():
             )
         ''')
 
-        cursor.executemany(
+        # Initial Data
+        if IS_POSTGRES:
+            insert_ignore_entitlements = '''
+            INSERT INTO entitlements (tier, feature_key, is_enabled, quota)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT (tier, feature_key) DO NOTHING
             '''
-            INSERT OR IGNORE INTO entitlements (tier, feature_key, is_enabled, quota)
-            VALUES (?, ?, ?, ?)
-            ''',
-            [
+            cursor.executemany(insert_ignore_entitlements, [
                 ("free", "alerts_basic", 1, 2),
                 ("free", "alerts_pro", 0, None),
                 ("free", "history_performance", 0, None),
@@ -214,19 +246,45 @@ def init_db():
                 ("pro", "alerts_pro", 1, 999),
                 ("pro", "history_performance", 1, None),
                 ("pro", "low_latency", 1, None)
-            ]
-        )
-
-        cursor.executemany(
+            ])
+            
+            insert_ignore_flags = '''
+            INSERT INTO feature_flags (feature_key, enabled, tier)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (feature_key, tier) DO NOTHING
             '''
-            INSERT OR IGNORE INTO feature_flags (feature_key, enabled, tier)
-            VALUES (?, ?, ?)
-            ''',
-            [
+            cursor.executemany(insert_ignore_flags, [
                 ("high_value_signal", 0, "free"),
                 ("high_value_signal", 1, "pro")
-            ]
-        )
+            ])
+        else:
+            cursor.executemany(
+                '''
+                INSERT OR IGNORE INTO entitlements (tier, feature_key, is_enabled, quota)
+                VALUES (?, ?, ?, ?)
+                ''',
+                [
+                    ("free", "alerts_basic", 1, 2),
+                    ("free", "alerts_pro", 0, None),
+                    ("free", "history_performance", 0, None),
+                    ("free", "low_latency", 0, None),
+                    ("pro", "alerts_basic", 1, 999),
+                    ("pro", "alerts_pro", 1, 999),
+                    ("pro", "history_performance", 1, None),
+                    ("pro", "low_latency", 1, None)
+                ]
+            )
+    
+            cursor.executemany(
+                '''
+                INSERT OR IGNORE INTO feature_flags (feature_key, enabled, tier)
+                VALUES (?, ?, ?)
+                ''',
+                [
+                    ("high_value_signal", 0, "free"),
+                    ("high_value_signal", 1, "pro")
+                ]
+            )
         
         conn.commit()
         conn.close()
@@ -238,7 +296,7 @@ def save_alert(alert: Dict):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('''
+        execute_sql(cursor, '''
             INSERT INTO alerts (timestamp, market_question, outcome, old_price, new_price, change, message)
             VALUES (?, ?, ?, ?, ?, ?, ?)
         ''', (
@@ -259,7 +317,7 @@ def get_recent_alerts(limit: int = 50) -> List[Dict]:
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('SELECT * FROM alerts ORDER BY timestamp DESC LIMIT ?', (limit,))
+        execute_sql(cursor, 'SELECT * FROM alerts ORDER BY timestamp DESC LIMIT ?', (limit,))
         rows = cursor.fetchall()
         conn.close()
         return [dict(row) for row in rows]
@@ -271,21 +329,39 @@ def save_whale_trade(trade: Dict):
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('''
-            INSERT OR IGNORE INTO whale_trades (
-                timestamp, maker_address, market_question, outcome, side, size, price, value_usd, market_slug
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            trade['timestamp'],
-            trade['maker_address'],
-            trade['market_question'],
-            trade['outcome'],
-            trade['side'],
-            trade['size'],
-            trade['price'],
-            trade['value_usd'],
-            trade['market_slug']
-        ))
+        if IS_POSTGRES:
+            execute_sql(cursor, '''
+                INSERT INTO whale_trades (
+                    timestamp, maker_address, market_question, outcome, side, size, price, value_usd, market_slug
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (maker_address, timestamp, market_slug, value_usd) DO NOTHING
+            ''', (
+                trade['timestamp'],
+                trade['maker_address'],
+                trade['market_question'],
+                trade['outcome'],
+                trade['side'],
+                trade['size'],
+                trade['price'],
+                trade['value_usd'],
+                trade['market_slug']
+            ))
+        else:
+            execute_sql(cursor, '''
+                INSERT OR IGNORE INTO whale_trades (
+                    timestamp, maker_address, market_question, outcome, side, size, price, value_usd, market_slug
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                trade['timestamp'],
+                trade['maker_address'],
+                trade['market_question'],
+                trade['outcome'],
+                trade['side'],
+                trade['size'],
+                trade['price'],
+                trade['value_usd'],
+                trade['market_slug']
+            ))
         conn.commit()
         conn.close()
     except Exception as e:
@@ -296,7 +372,7 @@ def get_leaderboard_stats(limit: int = 10) -> List[Dict]:
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        cursor.execute('''
+        execute_sql(cursor, '''
             SELECT 
                 maker_address,
                 SUM(value_usd) as total_volume,
@@ -321,15 +397,20 @@ def create_user(email: str, password_hash: str) -> Optional[int]:
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('INSERT INTO users (email, password_hash) VALUES (?, ?)', (email, password_hash))
-        user_id = cursor.lastrowid
+        if IS_POSTGRES:
+            cursor.execute('INSERT INTO users (email, password_hash) VALUES (%s, %s) RETURNING id', (email, password_hash))
+            user_id = cursor.fetchone()['id']
+        else:
+            cursor.execute('INSERT INTO users (email, password_hash) VALUES (?, ?)', (email, password_hash))
+            user_id = cursor.lastrowid
         conn.commit()
         conn.close()
         return user_id
-    except sqlite3.IntegrityError:
-        logger.warning(f"User with email {email} already exists")
-        return None
     except Exception as e:
+        # Check for integrity error in a generic way or import specific exceptions
+        if "UNIQUE constraint failed" in str(e) or "duplicate key value" in str(e):
+             logger.warning(f"User with email {email} already exists")
+             return None
         logger.error(f"Failed to create user: {e}")
         return None
 
@@ -337,7 +418,7 @@ def get_user_by_email(email: str) -> Optional[Dict]:
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute('SELECT * FROM users WHERE email = ?', (email,))
+        execute_sql(cursor, 'SELECT * FROM users WHERE email = ?', (email,))
         row = cursor.fetchone()
         conn.close()
         if row:
@@ -358,7 +439,13 @@ def upsert_subscription(
 ) -> None:
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute(
+    
+    # SQLite and Postgres have slightly different ON CONFLICT syntax when using excluded
+    # SQLite: excluded.column
+    # Postgres: EXCLUDED.column
+    # They are case insensitive, so excluded.column works in Postgres too.
+    
+    execute_sql(cursor,
         '''
         INSERT INTO subscriptions (user_id, platform, plan_id, status, start_at, end_at, auto_renew)
         VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -377,7 +464,7 @@ def upsert_subscription(
 def get_latest_subscription(user_id: int) -> Optional[Dict]:
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute(
+    execute_sql(cursor,
         '''
         SELECT * FROM subscriptions
         WHERE user_id = ?
@@ -403,32 +490,40 @@ def save_transaction(
 ) -> None:
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute(
-        '''
-        INSERT OR IGNORE INTO transactions (
-            user_id, platform, order_id, product_id, purchase_token,
-            purchase_state, amount, currency, purchased_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''',
-        (
-            user_id,
-            platform,
-            order_id,
-            product_id,
-            purchase_token,
-            purchase_state,
-            amount,
-            currency,
-            purchased_at
+    if IS_POSTGRES:
+        execute_sql(cursor,
+            '''
+            INSERT INTO transactions (
+                user_id, platform, order_id, product_id, purchase_token,
+                purchase_state, amount, currency, purchased_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (platform, order_id) DO NOTHING
+            ''',
+            (
+                user_id, platform, order_id, product_id, purchase_token,
+                purchase_state, amount, currency, purchased_at
+            )
         )
-    )
+    else:
+        execute_sql(cursor,
+            '''
+            INSERT OR IGNORE INTO transactions (
+                user_id, platform, order_id, product_id, purchase_token,
+                purchase_state, amount, currency, purchased_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''',
+            (
+                user_id, platform, order_id, product_id, purchase_token,
+                purchase_state, amount, currency, purchased_at
+            )
+        )
     conn.commit()
     conn.close()
 
 def get_transaction_user_id(order_id: str) -> Optional[int]:
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute(
+    execute_sql(cursor,
         'SELECT user_id FROM transactions WHERE order_id = ? LIMIT 1',
         (order_id,)
     )
@@ -439,7 +534,7 @@ def get_transaction_user_id(order_id: str) -> Optional[int]:
 def set_user_entitlements(user_id: int, tier: str, effective_at: str, expires_at: str) -> None:
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute(
+    execute_sql(cursor,
         '''
         INSERT INTO user_entitlements (user_id, tier, effective_at, expires_at)
         VALUES (?, ?, ?, ?)
@@ -452,7 +547,7 @@ def set_user_entitlements(user_id: int, tier: str, effective_at: str, expires_at
 def get_latest_user_entitlement(user_id: int) -> Optional[Dict]:
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute(
+    execute_sql(cursor,
         '''
         SELECT * FROM user_entitlements
         WHERE user_id = ?
@@ -468,7 +563,7 @@ def get_latest_user_entitlement(user_id: int) -> Optional[Dict]:
 def get_entitlements_for_tier(tier: str) -> List[Dict]:
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute(
+    execute_sql(cursor,
         '''
         SELECT feature_key, is_enabled, quota
         FROM entitlements
@@ -484,7 +579,7 @@ def get_entitlements_for_tier(tier: str) -> List[Dict]:
 def get_signals(limit: int = 50, offset: int = 0) -> List[Dict]:
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute(
+    execute_sql(cursor,
         '''
         SELECT id, title, content, tier_required, created_at
         FROM signals
@@ -500,7 +595,7 @@ def get_signals(limit: int = 50, offset: int = 0) -> List[Dict]:
 def get_signal_by_id(signal_id: int) -> Optional[Dict]:
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute(
+    execute_sql(cursor,
         '''
         SELECT id, title, content, tier_required, created_at
         FROM signals
@@ -515,7 +610,7 @@ def get_signal_by_id(signal_id: int) -> Optional[Dict]:
 def upsert_fcm_token(user_id: int, token: str) -> None:
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute(
+    execute_sql(cursor,
         '''
         INSERT INTO fcm_tokens (user_id, token, updated_at)
         VALUES (?, ?, CURRENT_TIMESTAMP)
@@ -531,7 +626,7 @@ def upsert_fcm_token(user_id: int, token: str) -> None:
 def get_fcm_tokens_for_user(user_id: int) -> List[str]:
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute(
+    execute_sql(cursor,
         '''
         SELECT token FROM fcm_tokens
         WHERE user_id = ?
@@ -545,7 +640,7 @@ def get_fcm_tokens_for_user(user_id: int) -> List[str]:
 def save_analytics_event(user_id: Optional[int], event_name: str, properties: Optional[str]) -> None:
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute(
+    execute_sql(cursor,
         '''
         INSERT INTO analytics_events (user_id, event_name, properties)
         VALUES (?, ?, ?)
@@ -558,7 +653,7 @@ def save_analytics_event(user_id: Optional[int], event_name: str, properties: Op
 def get_daily_pulse(limit: int = 20, offset: int = 0) -> List[Dict]:
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute(
+    execute_sql(cursor,
         '''
         SELECT id, title, summary, content, created_at
         FROM daily_pulse
@@ -574,7 +669,7 @@ def get_daily_pulse(limit: int = 20, offset: int = 0) -> List[Dict]:
 def get_referral_code(user_id: int) -> Optional[str]:
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute(
+    execute_sql(cursor,
         '''
         SELECT code FROM referral_codes
         WHERE user_id = ?
@@ -589,7 +684,7 @@ def get_referral_code(user_id: int) -> Optional[str]:
 def insert_referral_code(user_id: int, code: str) -> None:
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute(
+    execute_sql(cursor,
         '''
         INSERT INTO referral_codes (user_id, code)
         VALUES (?, ?)
@@ -602,7 +697,7 @@ def insert_referral_code(user_id: int, code: str) -> None:
 def redeem_referral_code(code: str, referee_user_id: int) -> bool:
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute(
+    execute_sql(cursor,
         '''
         SELECT user_id FROM referral_codes
         WHERE code = ?
@@ -618,7 +713,7 @@ def redeem_referral_code(code: str, referee_user_id: int) -> bool:
         conn.close()
         return False
     try:
-        cursor.execute(
+        execute_sql(cursor,
             '''
             INSERT INTO referral_redemptions (code, referrer_user_id, referee_user_id)
             VALUES (?, ?, ?)
@@ -628,14 +723,15 @@ def redeem_referral_code(code: str, referee_user_id: int) -> bool:
         conn.commit()
         conn.close()
         return True
-    except sqlite3.IntegrityError:
+    except Exception:
+        # Catch integrity error
         conn.close()
         return False
 
 def get_feature_flags(tier: str) -> List[Dict]:
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute(
+    execute_sql(cursor,
         '''
         SELECT feature_key, enabled
         FROM feature_flags
@@ -651,15 +747,15 @@ def get_feature_flags(tier: str) -> List[Dict]:
 def get_metrics_counts() -> Dict:
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) as count FROM users")
+    execute_sql(cursor, "SELECT COUNT(*) as count FROM users")
     users_count = cursor.fetchone()["count"]
-    cursor.execute("SELECT COUNT(*) as count FROM subscriptions")
+    execute_sql(cursor, "SELECT COUNT(*) as count FROM subscriptions")
     subscriptions_count = cursor.fetchone()["count"]
-    cursor.execute("SELECT COUNT(*) as count FROM signals")
+    execute_sql(cursor, "SELECT COUNT(*) as count FROM signals")
     signals_count = cursor.fetchone()["count"]
-    cursor.execute("SELECT COUNT(*) as count FROM alerts")
+    execute_sql(cursor, "SELECT COUNT(*) as count FROM alerts")
     alerts_count = cursor.fetchone()["count"]
-    cursor.execute("SELECT COUNT(*) as count FROM daily_pulse")
+    execute_sql(cursor, "SELECT COUNT(*) as count FROM daily_pulse")
     daily_pulse_count = cursor.fetchone()["count"]
     conn.close()
     return {
