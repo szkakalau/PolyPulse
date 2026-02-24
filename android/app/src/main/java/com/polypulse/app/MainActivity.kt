@@ -14,7 +14,6 @@ import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Warning
-import androidx.compose.material.icons.filled.TrendingUp
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -23,6 +22,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -73,7 +73,11 @@ import com.polypulse.app.presentation.signals.SignalDetailScreen
 import com.polypulse.app.presentation.signals.SignalDetailViewModel
 import com.polypulse.app.presentation.signals.SignalDetailViewModelFactory
 import com.polypulse.app.presentation.util.NotificationHelper
+import com.polypulse.app.presentation.inapp.InAppMessageDialog
+import com.polypulse.app.presentation.inapp.InAppMessageViewModel
+import com.polypulse.app.presentation.inapp.InAppMessageViewModelFactory
 import com.polypulse.app.ui.theme.PolyPulseTheme
+import com.polypulse.app.data.remote.dto.AnalyticsEventRequest
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.coroutines.launch
@@ -128,7 +132,7 @@ class MainActivity : ComponentActivity() {
     private fun updatePendingSignalIdFromIntent(intent: Intent?) {
         if (intent == null) return
         val raw = intent.getStringExtra(EXTRA_SIGNAL_ID)
-            ?: intent.extras?.get(EXTRA_SIGNAL_ID)?.toString()
+            ?: intent.extras?.getString(EXTRA_SIGNAL_ID)
         val parsed = raw?.toIntOrNull()
         if (parsed != null) {
             pendingSignalId.value = parsed
@@ -164,9 +168,39 @@ fun PolyPulseApp(
     val paywallRepository = remember { AppModule.providePaywallRepository(context) }
     val paywallViewModel: PaywallViewModel = viewModel(factory = PaywallViewModelFactory(paywallRepository))
 
+    val inAppMessageRepository = remember { AppModule.provideInAppMessageRepository(context) }
+    val inAppMessageStore = remember { AppModule.provideInAppMessageStore(context) }
     val analyticsRepository = remember { AppModule.provideAnalyticsRepository(context) }
+    val inAppMessageViewModel: InAppMessageViewModel = viewModel(factory = InAppMessageViewModelFactory(inAppMessageRepository, analyticsRepository, inAppMessageStore))
+
     val notificationSettingsRepository = remember { AppModule.provideNotificationSettingsRepository(context) }
     val coroutineScope = rememberCoroutineScope()
+
+    LaunchedEffect(Unit) {
+        inAppMessageViewModel.checkForMessage()
+    }
+
+    val inAppMessage by inAppMessageViewModel.inAppMessage.collectAsState()
+    inAppMessage?.let { message ->
+        InAppMessageDialog(
+            message = message,
+            onDismiss = { inAppMessageViewModel.onMessageDismissed() },
+            onCtaClick = { action ->
+                val userTier = paywallViewModel.state.value.entitlements?.tier
+                inAppMessageViewModel.onCtaClicked(message, userTier)
+                if (action == "open_paywall") {
+                    val preselectedPlanId = message.plans
+                        ?.firstOrNull { it.id != "free" }
+                        ?.id
+                    if (preselectedPlanId != null) {
+                        navController.navigate("paywall?planId=$preselectedPlanId&messageId=${message.id}&source=in_app_message")
+                    } else {
+                        navController.navigate("paywall?messageId=${message.id}&source=in_app_message")
+                    }
+                }
+            }
+        )
+    }
     
     Scaffold(
         bottomBar = {
@@ -174,7 +208,7 @@ fun PolyPulseApp(
             val currentRoute = navBackStackEntry?.destination?.route
             
             // Only show bottom bar on top-level screens
-            if (currentRoute == "market_list" || currentRoute == "alerts" || currentRoute == "profile" || currentRoute == "dashboard" || currentRoute == "whales" || currentRoute == "smart") {
+            if (currentRoute == "market_list" || currentRoute == "alerts" || currentRoute == "profile" || currentRoute == "dashboard" || currentRoute == "whales") {
                 NavigationBar {
                     NavigationBarItem(
                         icon = { Icon(Icons.Default.Home, contentDescription = stringResource(R.string.home_content_desc)) },
@@ -190,7 +224,7 @@ fun PolyPulseApp(
                     )
                     NavigationBarItem(
                         icon = { Icon(Icons.Default.Info, contentDescription = "Dashboard") },
-                        label = { Text("Dashboard") },
+                        label = { Text(stringResource(R.string.nav_insights)) },
                         selected = currentRoute == "dashboard",
                         onClick = {
                             navController.navigate("dashboard") {
@@ -206,18 +240,6 @@ fun PolyPulseApp(
                         selected = currentRoute == "whales",
                         onClick = {
                             navController.navigate("whales") {
-                                popUpTo("market_list") { saveState = true }
-                                launchSingleTop = true
-                                restoreState = true
-                            }
-                        }
-                    )
-                    NavigationBarItem(
-                        icon = { Icon(Icons.Default.TrendingUp, contentDescription = "Smart Money") },
-                        label = { Text("Smart") },
-                        selected = currentRoute == "smart",
-                        onClick = {
-                            navController.navigate("smart") {
                                 popUpTo("market_list") { saveState = true }
                                 launchSingleTop = true
                                 restoreState = true
@@ -276,7 +298,9 @@ fun PolyPulseApp(
                 )
             }
             composable("alerts") {
-                AlertsScreen()
+                AlertsScreen(
+                    onNavigateToLogin = { navController.navigate("login") }
+                )
             }
             composable("profile") {
                 ProfileScreen(
@@ -327,14 +351,28 @@ fun PolyPulseApp(
             }
             composable("leaderboard") {
                 LeaderboardScreen(
-                    viewModel = leaderboardViewModel,
-                    onNavigateBack = { navController.popBackStack() }
+                    viewModel = leaderboardViewModel
                 )
             }
-            composable("paywall") {
+            composable(
+                route = "paywall?planId={planId}&messageId={messageId}&source={source}",
+                arguments = listOf(
+                    navArgument("planId") { type = NavType.StringType; nullable = true },
+                    navArgument("messageId") { type = NavType.StringType; nullable = true },
+                    navArgument("source") { type = NavType.StringType; nullable = true }
+                )
+            ) { backStackEntry ->
+                val planId = backStackEntry.arguments?.getString("planId")
+                val messageId = backStackEntry.arguments?.getString("messageId")
+                val source = backStackEntry.arguments?.getString("source")
                 PaywallScreen(
                     viewModel = paywallViewModel,
                     isLoggedIn = authViewModel.state.value.isLoggedIn,
+                    analyticsRepository = analyticsRepository,
+                    preselectedPlanId = planId,
+                    messageId = messageId,
+                    source = source,
+                    userTier = paywallViewModel.state.value.entitlements?.tier,
                     onNavigateToLogin = { navController.navigate("login") },
                     onTrialStarted = {
                         navController.previousBackStackEntry?.savedStateHandle?.set("trial_started", true)
@@ -346,7 +384,16 @@ fun PolyPulseApp(
             composable("signals") {
                 SignalsListScreen(
                     viewModel = signalsListViewModel,
+                    analyticsRepository = analyticsRepository,
                     onOpenSignal = { signalId ->
+                        coroutineScope.launch {
+                            analyticsRepository.trackEvent(
+                                AnalyticsEventRequest(
+                                    "signal_open",
+                                    properties = mapOf("signalId" to signalId.toString())
+                                )
+                            )
+                        }
                         navController.navigate("signal_detail/$signalId")
                     }
                 )
@@ -366,7 +413,17 @@ fun PolyPulseApp(
                     onConsumeRefresh = {
                         navController.currentBackStackEntry?.savedStateHandle?.set("trial_started", false)
                     },
-                    onUnlock = { navController.navigate("paywall") },
+                    onUnlock = {
+                        coroutineScope.launch {
+                            analyticsRepository.trackEvent(
+                                AnalyticsEventRequest(
+                                    "signal_unlock_click",
+                                    properties = mapOf("signalId" to signalId.toString())
+                                )
+                            )
+                        }
+                        navController.navigate("paywall")
+                    },
                     onFeedback = { feedbackType ->
                         coroutineScope.launch {
                             val eventName = when (feedbackType) {
@@ -375,8 +432,12 @@ fun PolyPulseApp(
                                 "traded" -> "signal_traded"
                                 else -> "signal_feedback_unknown"
                             }
-                            val properties = mapOf("signalId" to signalId.toString())
-                            analyticsRepository.trackEvent(eventName = eventName, properties = properties)
+                            analyticsRepository.trackEvent(
+                                AnalyticsEventRequest(
+                                    eventName,
+                                    properties = mapOf("signalId" to signalId.toString())
+                                )
+                            )
                         }
                     }
                 )

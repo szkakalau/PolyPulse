@@ -7,11 +7,16 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.polypulse.app.data.repository.NotificationSettingsRepository
 import com.polypulse.app.presentation.auth.AuthViewModel
+import com.polypulse.app.data.repository.AnalyticsRepository
+import java.text.SimpleDateFormat
+import java.util.Locale
+import java.util.TimeZone
 import kotlinx.coroutines.launch
 
 @Composable
@@ -157,96 +162,6 @@ fun NotificationSettingsScreen(
         Spacer(modifier = Modifier.height(24.dp))
         TextButton(onClick = onNavigateBack) {
             Text("Back")
-        }
-    }
-}
-
-@Composable
-fun PaywallScreen(
-    viewModel: PaywallViewModel,
-    isLoggedIn: Boolean,
-    onNavigateToLogin: () -> Unit,
-    onTrialStarted: () -> Unit,
-    onNavigateBack: () -> Unit
-) {
-    val state = viewModel.state.value
-
-    LaunchedEffect(isLoggedIn) {
-        if (isLoggedIn) {
-            viewModel.refreshEntitlements()
-            viewModel.refreshBillingStatus()
-        }
-    }
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Text(
-            text = "PolyPulse Pro",
-            style = MaterialTheme.typography.headlineMedium
-        )
-        Spacer(modifier = Modifier.height(16.dp))
-        Text("High-value alerts, low latency, and performance history")
-        Spacer(modifier = Modifier.height(24.dp))
-
-        if (state.entitlements != null) {
-            Text(text = "Current tier: ${state.entitlements.tier}")
-            Spacer(modifier = Modifier.height(12.dp))
-        }
-
-        if (state.billingStatus != null) {
-            val bs = state.billingStatus
-            Text(text = "Billing status: ${bs.status}")
-            if (bs.planId != null) {
-                Text(text = "Plan: ${bs.planId}")
-            }
-            Spacer(modifier = Modifier.height(12.dp))
-        }
-
-        if (state.isLoading) {
-            CircularProgressIndicator()
-            Spacer(modifier = Modifier.height(24.dp))
-        }
-
-        if (state.error != null) {
-            Text(text = state.error, color = MaterialTheme.colorScheme.error)
-            Spacer(modifier = Modifier.height(12.dp))
-        }
-
-        if (isLoggedIn) {
-            if (state.plans.isNotEmpty()) {
-                state.plans
-                    .filter { it.id != "free" }
-                    .forEach { plan ->
-                        Button(
-                            onClick = { viewModel.subscribeStub(plan.id, onTrialStarted) },
-                            enabled = !state.isLoading,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text("${plan.name} ${plan.price} ${plan.currency}/${plan.period}")
-                        }
-                        Spacer(modifier = Modifier.height(12.dp))
-                    }
-            }
-            Button(
-                onClick = { viewModel.startTrial(onTrialStarted) },
-                enabled = !state.isLoading
-            ) {
-                Text("Start Trial")
-            }
-        } else {
-            Button(onClick = onNavigateToLogin) {
-                Text("Login to start trial")
-            }
-        }
-
-        Spacer(modifier = Modifier.height(24.dp))
-        TextButton(onClick = onNavigateBack) {
-            Text("Not now")
         }
     }
 }

@@ -25,7 +25,8 @@ import androidx.compose.material.pullrefresh.rememberPullRefreshState
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterialApi::class)
 @Composable
 fun AlertsScreen(
-    viewModel: AlertsViewModel = viewModel()
+    viewModel: AlertsViewModel = viewModel(),
+    onNavigateToLogin: () -> Unit
 ) {
     val state = viewModel.state.value
 
@@ -58,11 +59,21 @@ fun AlertsScreen(
             }
             
             if (state.error.isNotBlank() && state.alerts.isEmpty()) {
-                Text(
-                    text = state.error,
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.align(Alignment.Center).padding(16.dp)
-                )
+                Column(
+                    modifier = Modifier.align(Alignment.Center).padding(16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = state.error,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                    if (state.error == "Please login to view alerts") {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Button(onClick = onNavigateToLogin) {
+                            Text("Login")
+                        }
+                    }
+                }
             }
 
             LazyColumn(

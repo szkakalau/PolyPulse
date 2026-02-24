@@ -36,6 +36,7 @@ fun MarketDetailScreen(
     viewModel: MarketDetailViewModel = viewModel(
         key = market.id,
         factory = object : androidx.lifecycle.ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
             override fun <T : androidx.lifecycle.ViewModel> create(modelClass: Class<T>): T {
                 return MarketDetailViewModel(market) as T
             }

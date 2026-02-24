@@ -8,6 +8,7 @@ import androidx.lifecycle.viewModelScope
 import com.polypulse.app.data.remote.dto.BillingStatusResponseDto
 import com.polypulse.app.data.remote.dto.EntitlementsResponseDto
 import com.polypulse.app.data.remote.dto.PaywallPlanDto
+import com.polypulse.app.data.remote.dto.SignalStatsDto
 import com.polypulse.app.data.repository.PaywallRepository
 import kotlinx.coroutines.launch
 
@@ -17,7 +18,8 @@ data class PaywallState(
     val plans: List<PaywallPlanDto> = emptyList(),
     val trialResult: String? = null,
     val entitlements: EntitlementsResponseDto? = null,
-    val billingStatus: BillingStatusResponseDto? = null
+    val billingStatus: BillingStatusResponseDto? = null,
+    val signalStats: SignalStatsDto? = null
 )
 
 class PaywallViewModel(private val repository: PaywallRepository) : ViewModel() {
@@ -26,6 +28,7 @@ class PaywallViewModel(private val repository: PaywallRepository) : ViewModel() 
 
     init {
         loadPaywall()
+        loadSignalStats()
     }
 
     fun loadPaywall() {
@@ -37,6 +40,15 @@ class PaywallViewModel(private val repository: PaywallRepository) : ViewModel() 
                 }
                 .onFailure { e ->
                     _state.value = _state.value.copy(isLoading = false, error = e.message ?: "Failed to load paywall")
+                }
+        }
+    }
+
+    fun loadSignalStats() {
+        viewModelScope.launch {
+            repository.getSignalStats()
+                .onSuccess { stats ->
+                    _state.value = _state.value.copy(signalStats = stats)
                 }
         }
     }
@@ -59,7 +71,7 @@ class PaywallViewModel(private val repository: PaywallRepository) : ViewModel() 
         }
     }
 
-    fun startTrial(onSuccess: () -> Unit) {
+    fun startTrial(onSuccess: () -> Unit, onFailure: (String) -> Unit) {
         viewModelScope.launch {
             _state.value = _state.value.copy(isLoading = true, error = null, trialResult = null)
             repository.startTrial()
@@ -70,12 +82,14 @@ class PaywallViewModel(private val repository: PaywallRepository) : ViewModel() 
                     onSuccess()
                 }
                 .onFailure { e ->
-                    _state.value = _state.value.copy(isLoading = false, error = e.message ?: "Failed to start trial")
+                    val errorMessage = e.message ?: "Failed to start trial"
+                    _state.value = _state.value.copy(isLoading = false, error = errorMessage)
+                    onFailure(errorMessage)
                 }
         }
     }
 
-    fun subscribeStub(productId: String, onSuccess: () -> Unit) {
+    fun subscribeStub(productId: String, onSuccess: () -> Unit, onFailure: (String) -> Unit) {
         viewModelScope.launch {
             _state.value = _state.value.copy(isLoading = true, error = null)
             repository.verifyBilling(productId)
@@ -86,7 +100,9 @@ class PaywallViewModel(private val repository: PaywallRepository) : ViewModel() 
                     onSuccess()
                 }
                 .onFailure { e ->
-                    _state.value = _state.value.copy(isLoading = false, error = e.message ?: "Failed to subscribe")
+                    val errorMessage = e.message ?: "Failed to subscribe"
+                    _state.value = _state.value.copy(isLoading = false, error = errorMessage)
+                    onFailure(errorMessage)
                 }
         }
     }

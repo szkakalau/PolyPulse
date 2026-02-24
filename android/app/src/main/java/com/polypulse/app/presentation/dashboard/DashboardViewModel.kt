@@ -47,7 +47,6 @@ class DashboardViewModel(
             _state.value = _state.value.copy(isLoading = true, error = null)
             
             try {
-                // Fetch stats and whales in parallel
                 val statsDeferred = async { repository.getDashboardStats() }
                 val whalesDeferred = async { repository.getWhaleActivity() }
                 
@@ -65,15 +64,18 @@ class DashboardViewModel(
                     val errorMsg = whalesResult.exceptionOrNull()?.message
                         ?: statsResult.exceptionOrNull()?.message
                         ?: "Failed to load data"
+                    val mappedError = if (errorMsg == "No token found") "Please login" else errorMsg
                     _state.value = _state.value.copy(
                         isLoading = false,
-                        error = errorMsg
+                        error = mappedError
                     )
                 }
             } catch (e: Exception) {
+                 val errorMsg = e.message ?: "Unknown error"
+                 val mappedError = if (errorMsg == "No token found") "Please login" else errorMsg
                  _state.value = _state.value.copy(
                     isLoading = false,
-                    error = e.message ?: "Unknown error"
+                    error = mappedError
                 )
             }
         }

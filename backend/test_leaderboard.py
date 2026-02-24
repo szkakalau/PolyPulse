@@ -39,7 +39,9 @@ def check_trades(token_id, market_question, outcome, market_slug):
     
     try:
         # Force no proxy for Data API as well
-        r = requests.get(url, params=params, proxies={"http": None, "https": None})
+        s = requests.Session()
+        s.trust_env = False
+        r = s.get(url, params=params, timeout=10)
         trades = r.json()
         print(f"  Trades found: {len(trades)}")
         

@@ -18,18 +18,30 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.Divider
+import com.polypulse.app.data.remote.dto.AnalyticsEventRequest
+import com.polypulse.app.data.repository.AnalyticsRepository
+import kotlinx.coroutines.launch
 
 @Composable
 fun SignalsListScreen(
     viewModel: SignalsListViewModel,
+    analyticsRepository: AnalyticsRepository,
     onOpenSignal: (Int) -> Unit
 ) {
     val state = viewModel.state.value
+    val scope = rememberCoroutineScope()
+
+    LaunchedEffect(Unit) {
+        scope.launch {
+            analyticsRepository.trackEvent(AnalyticsEventRequest("signals_list_view"))
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -93,6 +105,13 @@ fun SignalsListScreen(
                             text = signal.createdAt,
                             style = MaterialTheme.typography.bodySmall
                         )
+                        if (signal.evidence != null) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = "Evidence: ${signal.evidence.sourceType}",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
                     }
                 }
             }
@@ -151,6 +170,14 @@ fun SignalDetailScreen(
         if (signal.locked) {
             Text(text = "This signal is locked.")
             Spacer(modifier = Modifier.height(12.dp))
+            if (signal.evidence != null) {
+                Text(text = "Evidence")
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(text = "Source: ${signal.evidence.sourceType}")
+                Text(text = "Triggered: ${signal.evidence.triggeredAt}")
+                Text(text = "Market: ${signal.evidence.marketId}")
+                Spacer(modifier = Modifier.height(12.dp))
+            }
             Button(onClick = onUnlock) {
                 Text("Unlock")
             }
@@ -183,4 +210,3 @@ fun SignalDetailScreen(
         }
     }
 }
-

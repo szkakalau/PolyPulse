@@ -338,6 +338,27 @@ CREATE TABLE feature_flags (
 - 高风险功能提示与限制
 
 ## 11.2 分阶段开发计划
+### 11.2.1 最优策划执行顺序（最小闭环优先）
+- Week 1：Subscription + Entitlement + Signal Lock + Paywall 入口
+- Week 2：价值证明件（7 日命中率、历史绩效卡、锁定预览）+ Trial + Push 分层
+- Week 3：收费启动（订阅流程打通、埋点、定价文案 A/B）
+- Week 4：留存增长（Daily Pulse、Trial Ending、Referral）
+
+### 11.2.2 菜单结构收敛（移动端）
+- 目标：4–5 个一级入口
+- 推荐：Markets / Insights / Whales / Alerts / Profile
+- 备选：Markets / Insights / Alerts / Profile（Whales 并入 Markets 或 Insights）
+
+### 11.2.3 价值证明件（付费前必见）
+- 7 日命中率与历史绩效
+- Signal Lock Preview
+- 真实案例卡片
+
+### 11.2.4 付费墙最短路径
+- 触发点：点击 High Value Signal
+- 结构顺序：价值 -> 证据 -> 价格 -> 风险反转
+- 关键文案：领先时长、真实命中率、7 天试用
+
 ### 阶段 1：商业化闭环
 - 订阅与交易表落库
 - 订阅状态校验接口

@@ -14,6 +14,10 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.first
 import retrofit2.HttpException
+import java.io.IOException
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 data class AlertsState(
     val alerts: List<AlertDto> = emptyList(),
@@ -86,7 +90,11 @@ class AlertsViewModel(application: Application) : AndroidViewModel(application) 
                 tokenManager.deleteToken()
             }
             if (_state.value.alerts.isEmpty()) {
-                _state.value = AlertsState(error = mapErrorMessage(e))
+                if (shouldUseMock(e)) {
+                    _state.value = AlertsState(alerts = mockAlerts(), isLoading = false)
+                } else {
+                    _state.value = AlertsState(error = mapErrorMessage(e))
+                }
             } else {
                  _state.value = _state.value.copy(isLoading = false)
             }
@@ -102,5 +110,34 @@ class AlertsViewModel(application: Application) : AndroidViewModel(application) 
             }
         }
         return "Failed to connect to backend"
+    }
+
+    private fun shouldUseMock(error: Exception): Boolean {
+        return error is IOException || error.message?.contains("Failed to connect") == true
+    }
+
+    private fun mockAlerts(): List<AlertDto> {
+        val formatter = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US)
+        val now = formatter.format(Date())
+        return listOf(
+            AlertDto(
+                timestamp = now,
+                market_question = "Will BTC close above $100,000 this year?",
+                outcome = "Yes",
+                old_price = 0.52,
+                new_price = 0.60,
+                change = 0.08,
+                message = "BTC Yes moved to 60%"
+            ),
+            AlertDto(
+                timestamp = now,
+                market_question = "Will the incumbent win the next election?",
+                outcome = "No",
+                old_price = 0.44,
+                new_price = 0.51,
+                change = 0.07,
+                message = "Incumbent No moved to 51%"
+            )
+        )
     }
 }

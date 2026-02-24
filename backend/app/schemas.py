@@ -38,6 +38,8 @@ class EntitlementFeature(BaseModel):
 class EntitlementsResponse(BaseModel):
     tier: str
     features: List[EntitlementFeature]
+    effectiveAt: Optional[str] = None
+    expiresAt: Optional[str] = None
 
 class BillingVerifyResponse(BaseModel):
     status: str
@@ -87,6 +89,15 @@ class PaywallPlan(BaseModel):
 class PaywallResponse(BaseModel):
     plans: List[PaywallPlan]
 
+class InAppMessageResponse(BaseModel):
+    id: str
+    type: str
+    title: str
+    body: str
+    ctaText: str
+    ctaAction: str
+    plans: List[PaywallPlan]
+
 class TrialStartResponse(BaseModel):
     status: str
     tier: str
@@ -115,6 +126,10 @@ class DailyPulseResponse(BaseModel):
     summary: str
     content: str
     createdAt: str
+
+class SignalStatsResponse(BaseModel):
+    signals7d: int
+    evidence7d: int
 
 class ReferralCodeResponse(BaseModel):
     code: str

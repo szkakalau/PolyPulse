@@ -7,6 +7,7 @@ import com.polypulse.app.data.remote.dto.BillingVerifyRequestDto
 import com.polypulse.app.data.remote.dto.BillingVerifyResponseDto
 import com.polypulse.app.data.remote.dto.EntitlementsResponseDto
 import com.polypulse.app.data.remote.dto.PaywallResponseDto
+import com.polypulse.app.data.remote.dto.SignalStatsDto
 import com.polypulse.app.data.remote.dto.TrialStartResponseDto
 import kotlinx.coroutines.flow.first
 
@@ -62,6 +63,15 @@ class PaywallRepository(
         return try {
             val token = tokenManager.token.first() ?: throw Exception("No token found")
             val res = apiProvider.call { it.getBillingStatus("Bearer $token") }
+            Result.success(res)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun getSignalStats(): Result<SignalStatsDto> {
+        return try {
+            val res = apiProvider.call { it.getSignalStats() }
             Result.success(res)
         } catch (e: Exception) {
             Result.failure(e)

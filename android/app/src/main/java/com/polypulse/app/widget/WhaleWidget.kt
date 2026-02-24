@@ -56,10 +56,10 @@ class WhaleWidget : AppWidgetProvider() {
                         val latestWhale = whales.first()
                         updateWidgetView(context, views, latestWhale)
                     } else {
-                        updateWidgetEmpty(context, views)
+                        updateWidgetEmpty(views)
                     }
                 } else {
-                    updateWidgetLogin(context, views)
+                    updateWidgetLogin(views)
                 }
                 
                 // Push update to widget
@@ -98,14 +98,14 @@ class WhaleWidget : AppWidgetProvider() {
         views.setTextViewText(R.id.widget_timestamp, "Just now") 
     }
     
-    private fun updateWidgetEmpty(context: Context, views: RemoteViews) {
+    private fun updateWidgetEmpty(views: RemoteViews) {
         views.setTextViewText(R.id.widget_market, "No recent large trades.")
         views.setTextViewText(R.id.widget_value, "")
         views.setTextViewText(R.id.widget_side, "")
         views.setTextViewText(R.id.widget_outcome, "")
     }
 
-    private fun updateWidgetLogin(context: Context, views: RemoteViews) {
+    private fun updateWidgetLogin(views: RemoteViews) {
         views.setTextViewText(R.id.widget_market, "Please login to PolyPulse app.")
         views.setTextViewText(R.id.widget_value, "")
         views.setTextViewText(R.id.widget_side, "")

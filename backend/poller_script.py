@@ -7,7 +7,9 @@ BASE_URL = "https://clob.polymarket.com"
 def fetch_markets():
     print(f"[{datetime.now()}] Fetching markets...")
     try:
-        response = requests.get(f"{BASE_URL}/markets", params={"limit": 5, "active": "true", "order": "volume"})
+        session = requests.Session()
+        session.trust_env = False
+        response = session.get(f"{BASE_URL}/markets", params={"limit": 5, "active": "true", "order": "volume"})
         response.raise_for_status()
         data = response.json()
         

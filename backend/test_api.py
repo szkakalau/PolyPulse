@@ -15,7 +15,9 @@ if markets:
         url = f"https://data-api.polymarket.com/trades?market={token_id}"
         print(f"Testing URL: {url}")
         try:
-            r = requests.get(url)
+            session = requests.Session()
+            session.trust_env = False
+            r = session.get(url, timeout=10)
             print(f"Status: {r.status_code}")
             if r.status_code == 200:
                 data = r.json()

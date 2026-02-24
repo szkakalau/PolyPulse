@@ -32,6 +32,7 @@ from app.database import (
     get_notification_settings,
     set_notification_settings,
     save_analytics_event,
+    has_recent_analytics_event,
     get_watchlist,
     add_to_watchlist,
     remove_from_watchlist,
@@ -40,7 +41,8 @@ from app.database import (
     insert_referral_code,
     redeem_referral_code,
     get_feature_flags,
-    get_metrics_counts
+    get_metrics_counts,
+    get_signal_stats
 )
 from app.services.auth_service import AuthService
 from app.services.market_service import MarketService
@@ -63,9 +65,11 @@ from app.schemas import (
     EntitlementFeature,
     SubscriptionInfo,
     BillingWebhookRequest,
+    SignalEvidence,
     SignalResponse,
     PaywallPlan,
     PaywallResponse,
+    InAppMessageResponse,
     TrialStartResponse,
     NotificationRegisterRequest,
     NotificationSendRequest,
@@ -79,6 +83,7 @@ from app.schemas import (
     FeatureFlagResponse,
     MetricsResponse,
     MonitorAlertRequest,
+    SignalStatsResponse,
     AdminSignalCreateRequest
 )
 
@@ -283,13 +288,36 @@ def expire_trials():
             '''
         )
         rows = cursor.fetchall()
+        now = datetime.utcnow()
+        expiring_window = now + timedelta(hours=24)
         for row in rows:
             try:
                 expires_at = datetime.fromisoformat(row["expires_at"])
-                if expires_at < datetime.utcnow():
+                if now <= expires_at <= expiring_window:
+                    user_id = int(row["user_id"])
+                    if not has_recent_analytics_event(user_id, "trial_expiring_notice", 24):
+                        delivered = deliver_trial_notification(
+                            user_id=user_id,
+                            title="Trial ending soon",
+                            body="Your PolyPulse Pro trial ends in 24 hours.",
+                            data={"type": "trial_expiring"}
+                        )
+                        if delivered:
+                            save_analytics_event(user_id, "trial_expiring_notice", None)
+                if expires_at < now:
+                    user_id = int(row["user_id"])
+                    if not has_recent_analytics_event(user_id, "trial_expired_notice", 24):
+                        delivered = deliver_trial_notification(
+                            user_id=user_id,
+                            title="Trial ended",
+                            body="Your PolyPulse Pro trial has ended. Unlock signals anytime.",
+                            data={"type": "trial_expired"}
+                        )
+                        if delivered:
+                            save_analytics_event(user_id, "trial_expired_notice", None)
                     now_str = datetime.utcnow().isoformat()
                     set_user_entitlements(
-                        user_id=row["user_id"],
+                        user_id=user_id,
                         tier="free",
                         effective_at=now_str,
                         expires_at=now_str
@@ -314,6 +342,21 @@ def deliver_notification(user_id: int, signal_id: int) -> bool:
         title="PolyPulse Signal",
         body=signal["title"],
         data={"signalId": str(signal["id"])}
+    )
+    return True
+
+def deliver_trial_notification(user_id: int, title: str, body: str, data: dict) -> bool:
+    settings = get_notification_settings(user_id)
+    if not settings.get("push_enabled", True):
+        return False
+    tokens = get_fcm_tokens_for_user(user_id)
+    if not tokens:
+        return False
+    fcm_service.send_multicast(
+        tokens=tokens,
+        title=title,
+        body=body,
+        data=data
     )
     return True
 
@@ -346,37 +389,33 @@ async def lifespan(app: FastAPI):
     init_db()
     init_polymarket_db()
     
-    scheduler = BackgroundScheduler()
-    # Fetch whale data every 2 minutes
-    scheduler.add_job(update_whale_data, 'interval', minutes=2)
-    
-    # Analyze smart money (closed markets) every 6 hours
-    scheduler.add_job(whale_service.analyze_smart_money, 'interval', hours=6)
-
-    scheduler.add_job(refresh_polymarket_data, 'interval', minutes=1)
-    scheduler.add_job(expire_trials, 'interval', hours=24)
-    scheduler.add_job(process_notification_queue, 'interval', seconds=5)
-    auto_interval = int(os.environ.get("AUTO_SIGNAL_BROADCAST_INTERVAL_SECONDS") or "0")
-    if auto_interval > 0:
-        scheduler.add_job(generate_demo_signal_and_broadcast, 'interval', seconds=auto_interval)
-    
-    scheduler.start()
-    
-    # Run one immediate update in background to avoid blocking startup
-    scheduler.add_job(update_whale_data)
-    # Run smart money analysis in background (don't block startup)
-    scheduler.add_job(whale_service.analyze_smart_money) 
-    scheduler.add_job(refresh_polymarket_data)
-    scheduler.add_job(expire_trials)
-    scheduler.add_job(process_notification_queue)
-    if auto_interval > 0:
-        scheduler.add_job(generate_demo_signal_and_broadcast)
+    disable_scheduler = os.environ.get("DISABLE_SCHEDULER", "0") == "1"
+    scheduler = None
+    if not disable_scheduler:
+        scheduler = BackgroundScheduler()
+        scheduler.add_job(update_whale_data, 'interval', minutes=2)
+        scheduler.add_job(whale_service.analyze_smart_money, 'interval', hours=6)
+        scheduler.add_job(refresh_polymarket_data, 'interval', minutes=1)
+        scheduler.add_job(expire_trials, 'interval', hours=24)
+        scheduler.add_job(process_notification_queue, 'interval', seconds=5)
+        auto_interval = int(os.environ.get("AUTO_SIGNAL_BROADCAST_INTERVAL_SECONDS") or "0")
+        if auto_interval > 0:
+            scheduler.add_job(generate_demo_signal_and_broadcast, 'interval', seconds=auto_interval)
+        scheduler.start()
+        scheduler.add_job(update_whale_data)
+        scheduler.add_job(whale_service.analyze_smart_money) 
+        scheduler.add_job(refresh_polymarket_data)
+        scheduler.add_job(expire_trials)
+        scheduler.add_job(process_notification_queue)
+        if auto_interval > 0:
+            scheduler.add_job(generate_demo_signal_and_broadcast)
     
     yield
     
     # Shutdown
     logger.info("Shutting down...")
-    scheduler.shutdown()
+    if scheduler:
+        scheduler.shutdown()
 
 app = FastAPI(title="PolyPulse API", lifespan=lifespan)
 
@@ -435,7 +474,7 @@ def _normalize_subscription_status(status_value: str) -> str:
     allowed = {"active", "grace", "expired", "canceled", "paused"}
     return normalized if normalized in allowed else "active"
 
-def _build_entitlements_response(tier: str) -> EntitlementsResponse:
+def _build_entitlements_response(tier: str, user_id: Optional[int] = None) -> EntitlementsResponse:
     rows = get_entitlements_for_tier(tier)
     features = [
         EntitlementFeature(
@@ -445,7 +484,19 @@ def _build_entitlements_response(tier: str) -> EntitlementsResponse:
         )
         for row in rows
     ]
-    return EntitlementsResponse(tier=tier, features=features)
+    effective_at = None
+    expires_at = None
+    if user_id is not None:
+        entitlement = get_latest_user_entitlement(user_id)
+        if entitlement:
+            effective_at = entitlement.get("effective_at")
+            expires_at = entitlement.get("expires_at")
+    return EntitlementsResponse(
+        tier=tier,
+        features=features,
+        effectiveAt=effective_at,
+        expiresAt=expires_at
+    )
 
 def _resolve_tier_for_user(user_id: int) -> str:
     entitlement = get_latest_user_entitlement(user_id)
@@ -467,6 +518,48 @@ def _is_signal_locked(required_tier: str, user_tier: str) -> bool:
 
 def _notification_delay_seconds(signal_required_tier: str, user_tier: str) -> int:
     return 300 if _is_signal_locked(signal_required_tier, user_tier) else 0
+
+def _is_trial_expired(user_id: int) -> bool:
+    entitlement = get_latest_user_entitlement(user_id)
+    if not entitlement:
+        return False
+    expires_at = entitlement.get("expires_at")
+    if not expires_at:
+        return False
+    if entitlement.get("tier") != "free":
+        return False
+    try:
+        return datetime.fromisoformat(expires_at) < datetime.utcnow()
+    except Exception:
+        return False
+
+def _build_in_app_message(user_id: int) -> Optional[InAppMessageResponse]:
+    if has_recent_analytics_event(user_id, "in_app_message_delivered", 12):
+        return None
+    plans = [
+        PaywallPlan(id="free", name="Free", price=0, currency="CNY", period="month", trialDays=0),
+        PaywallPlan(id="pro_monthly", name="Pro Monthly", price=49, currency="CNY", period="month", trialDays=7),
+        PaywallPlan(id="pro_yearly", name="Pro Yearly", price=399, currency="CNY", period="year", trialDays=7)
+    ]
+    if _is_trial_expired(user_id):
+        return InAppMessageResponse(
+            id="trial_expired",
+            type="trial_expired",
+            title="Trial ended",
+            body="Your Pro trial has ended. Unlock signals and performance history with Pro.",
+            ctaText="Upgrade to Pro",
+            ctaAction="open_paywall",
+            plans=plans
+        )
+    return InAppMessageResponse(
+        id="free_upgrade",
+        type="upgrade",
+        title="Unlock Pro signals",
+        body="Get high-value alerts, low latency, and performance history.",
+        ctaText="See Pro plans",
+        ctaAction="open_paywall",
+        plans=plans
+    )
 
 def _require_admin(request: Request, admin_key: Optional[str]) -> None:
     expected = os.environ.get("ADMIN_API_KEY")
@@ -721,6 +814,14 @@ def get_signals_api(
         )
     return response
 
+@app.get("/signals/stats", response_model=SignalStatsResponse)
+def get_signal_stats_api():
+    stats = get_signal_stats()
+    return SignalStatsResponse(
+        signals7d=stats["signals_7d"],
+        evidence7d=stats["evidence_7d"]
+    )
+
 
 @app.get("/signals/{signal_id}", response_model=SignalResponse)
 def get_signal_detail(
@@ -766,6 +867,14 @@ def get_paywall(current_user: dict = Depends(get_optional_user)):
         PaywallPlan(id="pro_yearly", name="Pro Yearly", price=399, currency="CNY", period="year", trialDays=7)
     ]
     return PaywallResponse(plans=plans)
+
+@app.get("/in-app-message", response_model=Optional[InAppMessageResponse])
+def get_in_app_message(current_user: dict = Depends(get_current_user)):
+    user_id = current_user["id"]
+    message = _build_in_app_message(user_id)
+    if message:
+        save_analytics_event(user_id, "in_app_message_delivered", json.dumps({"messageId": message.id}))
+    return message
 
 
 @app.post("/trial/start", response_model=TrialStartResponse)
@@ -1056,7 +1165,7 @@ def verify_billing(
         endAt=end_at_str,
         autoRenew=True
     )
-    entitlements = _build_entitlements_response("pro")
+    entitlements = _build_entitlements_response("pro", user_id)
     return BillingVerifyResponse(
         status="active",
         subscription=subscription,
@@ -1086,7 +1195,7 @@ def billing_status(current_user: dict = Depends(get_current_user)):
 @app.get("/entitlements/me", response_model=EntitlementsResponse)
 def entitlements_me(current_user: dict = Depends(get_current_user)):
     tier = _resolve_tier_for_user(current_user["id"])
-    return _build_entitlements_response(tier)
+    return _build_entitlements_response(tier, current_user["id"])
 
 @app.post("/billing/webhook")
 def billing_webhook(payload: BillingWebhookRequest):
@@ -1153,3 +1262,8 @@ def monitor_alert(payload: MonitorAlertRequest):
     else:
         logger.info(f"[monitor:{source}] {message}")
     return {"status": "ok"}
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("PORT") or "8000")
+    uvicorn.run(app, host="0.0.0.0", port=port)

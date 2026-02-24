@@ -2,6 +2,8 @@ import sqlite3
 import logging
 from typing import List, Dict, Optional, Any
 import os
+import json
+from datetime import datetime, timedelta
 
 try:
     import psycopg2
@@ -296,6 +298,68 @@ def init_db():
                     ("high_value_signal", 1, "pro")
                 ]
             )
+
+        if os.environ.get("SEED_DEMO_DATA", "0") == "1":
+            execute_sql(cursor, 'SELECT COUNT(*) as count FROM signals')
+            row = cursor.fetchone()
+            existing_count = int(row["count"] or 0) if row else 0
+            if existing_count == 0:
+                now = datetime.utcnow()
+                evidence_items = [
+                    {
+                        "sourceType": "whale_trade",
+                        "triggeredAt": now.strftime("%Y-%m-%d %H:%M:%S"),
+                        "marketId": "trump-win-2028",
+                        "makerAddress": "0x9a7f3b4e2d1c0f9a7f3b4e2d1c0f9a7f3b4e2d1c",
+                        "evidenceUrl": "https://polymarket.com/event/trump-win-2028",
+                        "dedupeKey": "seed-whale-trump-1"
+                    },
+                    {
+                        "sourceType": "momentum_alert",
+                        "triggeredAt": (now - timedelta(hours=3)).strftime("%Y-%m-%d %H:%M:%S"),
+                        "marketId": "fed-cuts-march",
+                        "makerAddress": "0x4f2a1c9b8d7e6f5a4f2a1c9b8d7e6f5a4f2a1c9b",
+                        "evidenceUrl": "https://polymarket.com/event/fed-cuts-march",
+                        "dedupeKey": "seed-momentum-fed-1"
+                    },
+                    {
+                        "sourceType": "order_flow",
+                        "triggeredAt": (now - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S"),
+                        "marketId": "btc-100k-2025",
+                        "makerAddress": "0x2c8f6a1d3b4e5f6a7c8d9e0f1a2b3c4d5e6f7a8b",
+                        "evidenceUrl": "https://polymarket.com/event/btc-100k-2025",
+                        "dedupeKey": "seed-orderflow-btc-1"
+                    }
+                ]
+                seed_signals = [
+                    (
+                        "鲸鱼账户大额押注 YES",
+                        "巨鲸在该市场单笔买入金额显著高于近 30 日均值，疑似提前布局。",
+                        "free",
+                        json.dumps(evidence_items[0])
+                    ),
+                    (
+                        "高频动量信号：价格快速上行",
+                        "过去 15 分钟内价格跃升并伴随成交量放大，短线趋势偏多。",
+                        "pro",
+                        json.dumps(evidence_items[1])
+                    ),
+                    (
+                        "资金流入聚集：订单簿失衡",
+                        "买方挂单显著占优，盘口失衡提示潜在方向性机会。",
+                        "free",
+                        json.dumps(evidence_items[2])
+                    )
+                ]
+                for title, content, tier_required, evidence_json in seed_signals:
+                    execute_sql(
+                        cursor,
+                        '''
+                        INSERT INTO signals (title, content, tier_required, evidence_json, created_at)
+                        VALUES (?, ?, ?, ?, ?)
+                        ''',
+                        (title, content, tier_required, evidence_json, now.strftime("%Y-%m-%d %H:%M:%S"))
+                    )
         
         conn.commit()
         conn.close()
@@ -736,6 +800,45 @@ def save_analytics_event(user_id: Optional[int], event_name: str, properties: Op
     )
     conn.commit()
     conn.close()
+
+def has_recent_analytics_event(user_id: int, event_name: str, since_hours: int) -> bool:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    since_ts = (datetime.utcnow() - timedelta(hours=since_hours)).strftime("%Y-%m-%d %H:%M:%S")
+    execute_sql(
+        cursor,
+        '''
+        SELECT COUNT(*) as count
+        FROM analytics_events
+        WHERE user_id = ? AND event_name = ? AND created_at >= ?
+        ''',
+        (user_id, event_name, since_ts)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return (row["count"] if row else 0) > 0
+
+def get_signal_stats(days: int = 7) -> Dict[str, int]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    since_ts = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+    execute_sql(
+        cursor,
+        '''
+        SELECT
+            COUNT(*) as signals_count,
+            SUM(CASE WHEN evidence_json IS NOT NULL AND evidence_json != '' THEN 1 ELSE 0 END) as evidence_count
+        FROM signals
+        WHERE created_at >= ?
+        ''',
+        (since_ts,)
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return {
+        "signals_7d": int(row["signals_count"] or 0) if row else 0,
+        "evidence_7d": int(row["evidence_count"] or 0) if row else 0
+    }
 
 def get_watchlist(user_id: int) -> List[str]:
     conn = get_db_connection()

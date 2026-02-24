@@ -22,8 +22,7 @@ import java.util.Locale
 
 @Composable
 fun LeaderboardScreen(
-    viewModel: LeaderboardViewModel,
-    onNavigateBack: () -> Unit = {}
+    viewModel: LeaderboardViewModel
 ) {
     val state = viewModel.state
 

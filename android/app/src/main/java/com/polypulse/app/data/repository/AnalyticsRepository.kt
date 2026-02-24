@@ -11,13 +11,11 @@ class AnalyticsRepository(
     private val tokenManager: TokenManager
 ) {
     suspend fun trackEvent(
-        eventName: String,
-        properties: Map<String, String>? = null
+        request: AnalyticsEventRequest
     ): Result<AnalyticsEventResponse> {
         return try {
             val token = tokenManager.token.first()
             val authHeader = token?.let { "Bearer $it" }
-            val request = AnalyticsEventRequest(eventName = eventName, properties = properties)
             val response = apiProvider.call { it.trackEvent(authHeader, request) }
             Result.success(response)
         } catch (e: Exception) {

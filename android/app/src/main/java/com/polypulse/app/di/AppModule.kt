@@ -24,6 +24,8 @@ import java.net.InetAddress
 
 import com.polypulse.app.data.repository.DashboardRepository
 import com.polypulse.app.data.repository.AnalyticsRepository
+import com.polypulse.app.data.repository.InAppMessageRepository
+import com.polypulse.app.data.inapp.InAppMessageStore
 
 object AppModule {
     private const val BASE_URL = "https://clob.polymarket.com/"
@@ -111,6 +113,12 @@ object AppModule {
     @Volatile
     private var notificationSettingsRepository: NotificationSettingsRepository? = null
 
+    @Volatile
+    private var inAppMessageRepository: InAppMessageRepository? = null
+
+    @Volatile
+    private var inAppMessageStore: InAppMessageStore? = null
+
     fun provideAuthRepository(context: Context): AuthRepository {
         return authRepository ?: synchronized(this) {
             val tokenManager = TokenManager(context)
@@ -171,6 +179,23 @@ object AppModule {
             val repo = NotificationSettingsRepository(backendApiProvider, tokenManager)
             notificationSettingsRepository = repo
             repo
+        }
+    }
+
+    fun provideInAppMessageRepository(context: Context): InAppMessageRepository {
+        return inAppMessageRepository ?: synchronized(this) {
+            val tokenManager = TokenManager(context)
+            val repo = InAppMessageRepository(backendApiProvider, tokenManager)
+            inAppMessageRepository = repo
+            repo
+        }
+    }
+
+    fun provideInAppMessageStore(context: Context): InAppMessageStore {
+        return inAppMessageStore ?: synchronized(this) {
+            val store = InAppMessageStore(context)
+            inAppMessageStore = store
+            store
         }
     }
 }

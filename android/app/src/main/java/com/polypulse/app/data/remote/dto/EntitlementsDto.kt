@@ -12,6 +12,7 @@ data class EntitlementFeatureDto(
 @Serializable
 data class EntitlementsResponseDto(
     val tier: String,
-    val features: List<EntitlementFeatureDto>
+    val features: List<EntitlementFeatureDto>,
+    val effectiveAt: String? = null,
+    val expiresAt: String? = null
 )
-

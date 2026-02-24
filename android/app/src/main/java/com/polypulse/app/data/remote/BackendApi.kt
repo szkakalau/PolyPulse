@@ -6,6 +6,7 @@ import com.polypulse.app.data.remote.dto.LoginRequest
 import com.polypulse.app.data.remote.dto.PaywallResponseDto
 import com.polypulse.app.data.remote.dto.RegisterRequest
 import com.polypulse.app.data.remote.dto.SignalDto
+import com.polypulse.app.data.remote.dto.SignalStatsDto
 import com.polypulse.app.data.remote.dto.SmartWalletDto
 import com.polypulse.app.data.remote.dto.TrialStartResponseDto
 import com.polypulse.app.data.remote.dto.EntitlementsResponseDto
@@ -27,6 +28,7 @@ import retrofit2.http.Path
 import retrofit2.http.Query
 import com.polypulse.app.data.remote.dto.AnalyticsEventRequest
 import com.polypulse.app.data.remote.dto.AnalyticsEventResponse
+import com.polypulse.app.data.remote.dto.InAppMessageDto
 
 interface BackendApi {
     @GET("dashboard/alerts")
@@ -111,6 +113,9 @@ interface BackendApi {
         @Path("signalId") signalId: Int
     ): SignalDto
 
+    @GET("signals/stats")
+    suspend fun getSignalStats(): SignalStatsDto
+
     @GET("paywall")
     suspend fun getPaywall(): PaywallResponseDto
 
@@ -140,6 +145,11 @@ interface BackendApi {
         @Header("Authorization") token: String? = null,
         @Body request: AnalyticsEventRequest
     ): AnalyticsEventResponse
+
+    @GET("in-app-message")
+    suspend fun getInAppMessage(
+        @Header("Authorization") token: String
+    ): InAppMessageDto?
 }
 
 class BackendApiProvider(private val apis: List<BackendApi>) {

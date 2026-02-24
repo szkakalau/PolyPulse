@@ -17,3 +17,8 @@ data class PaywallResponseDto(
     val plans: List<PaywallPlanDto>
 )
 
+@Serializable
+data class SignalStatsDto(
+    val signals7d: Int,
+    val evidence7d: Int
+)
