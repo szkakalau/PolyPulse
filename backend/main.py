@@ -4,9 +4,11 @@ import secrets
 import os
 import redis
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
-from fastapi import FastAPI, Depends, HTTPException, status, Header, Request
+from datetime import datetime, timedelta, timezone
+from fastapi import FastAPI, Depends, HTTPException, status, Header, Request, Response
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from apscheduler.schedulers.background import BackgroundScheduler
 from typing import List, Optional
@@ -26,6 +28,7 @@ from app.database import (
     get_signals,
     get_signal_by_id,
     create_signal,
+    upsert_signal_evaluation,
     upsert_fcm_token,
     get_fcm_tokens_for_user,
     get_user_ids_with_fcm_tokens,
@@ -42,12 +45,18 @@ from app.database import (
     redeem_referral_code,
     get_feature_flags,
     get_metrics_counts,
-    get_signal_stats
+    get_signal_stats,
+    get_signal_credibility,
+    create_notification_attempt,
+    update_notification_attempt,
+    get_delivery_observability
 )
 from app.services.auth_service import AuthService
 from app.services.market_service import MarketService
 from app.services.whale_service import WhaleService
 from app.services.fcm_service import FCMService
+from app.cache import cache
+from app.rate_limiter import rate_limiter
 from database import init_db as init_polymarket_db, get_session
 from models import Market, Trade, Whale, SmartWallet
 from polymarket import fetch_markets, fetch_trades_for_market, fetch_trades_for_token, fetch_closed_markets
@@ -84,12 +93,81 @@ from app.schemas import (
     MetricsResponse,
     MonitorAlertRequest,
     SignalStatsResponse,
-    AdminSignalCreateRequest
+    SignalCredibilityHistogramItem,
+    SignalCredibilityWindowResponse,
+    SignalCredibilityResponse,
+    DeliveryWindowResponse,
+    DeliveryObservabilityResponse,
+    AdminSignalCreateRequest,
+    AdminSignalEvaluationRequest
 )
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Performance monitoring
+import time
+from prometheus_client import Counter, Histogram, generate_latest
+from prometheus_client.exposition import CONTENT_TYPE_LATEST
+
+# Metrics definitions
+REQUEST_COUNT = Counter('http_requests_total', 'Total HTTP Requests', ['method', 'endpoint', 'status'])
+REQUEST_LATENCY = Histogram('http_request_duration_seconds', 'HTTP request latency', ['endpoint'])
+DB_QUERY_TIME = Histogram('db_query_duration_seconds', 'Database query duration', ['query_type'])
+REDIS_OPERATION_TIME = Histogram('redis_operation_duration_seconds', 'Redis operation duration', ['operation'])
+
+# Performance monitoring middleware
+async def performance_middleware(request: Request, call_next):
+    start_time = time.time()
+    endpoint = request.url.path
+    
+    try:
+        response = await call_next(request)
+        
+        # Record metrics
+        REQUEST_COUNT.labels(
+            method=request.method, 
+            endpoint=endpoint, 
+            status=response.status_code
+        ).inc()
+        
+        REQUEST_LATENCY.labels(endpoint=endpoint).observe(time.time() - start_time)
+        response.headers["Server-Timing"] = f"app;dur={(time.time() - start_time)*1000:.2f}"
+        response.headers["X-Response-Time-ms"] = f"{(time.time() - start_time)*1000:.2f}"
+        
+        return response
+    except Exception as e:
+        REQUEST_COUNT.labels(
+            method=request.method, 
+            endpoint=endpoint, 
+            status=500
+        ).inc()
+        raise e
+
+def _cache_key(prefix: str, parts: List[str]) -> str:
+    return "api_cache:" + prefix + ":" + ":".join(parts)
+
+def _cached_response(key: str, ttl_seconds: int, builder):
+    cached = cache.get(key)
+    if cached is not None:
+        return cached
+    data = builder()
+    cache.set(key, data, ttl_seconds=ttl_seconds)
+    return data
+
+def _utcnow():
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+def _rate_limit_key(request: Request) -> str:
+    forwarded = request.headers.get("X-Forwarded-For")
+    client_ip = forwarded.split(",")[0].strip() if forwarded else (request.client.host if request.client else "unknown")
+    return f"rate_limit:{client_ip}:{request.url.path}"
+
+def _sanitize_pagination(limit: int, offset: int, max_limit: int = 200) -> tuple[int, int]:
+    safe_limit = 1 if limit < 1 else (max_limit if limit > max_limit else limit)
+    safe_offset = 0 if offset < 0 else offset
+    return safe_limit, safe_offset
 
 # Initialize Services
 auth_service = AuthService()
@@ -98,6 +176,56 @@ whale_service = WhaleService()
 fcm_service = FCMService()
 redis_client = redis.Redis.from_url(os.environ["REDIS_URL"], decode_responses=True) if os.environ.get("REDIS_URL") else None
 redis_queue_key = "polypulse:notifications"
+ALERT_SUCCESS_RATE_MIN = float(os.environ.get("ALERT_SUCCESS_RATE_MIN", "0.9"))
+ALERT_QUEUE_DEPTH_MAX = int(os.environ.get("ALERT_QUEUE_DEPTH_MAX", "500"))
+ALERT_QUEUE_AGE_MAX_SECONDS = int(os.environ.get("ALERT_QUEUE_AGE_MAX_SECONDS", "120"))
+ALERT_DELIVERY_P90_MAX = int(os.environ.get("ALERT_DELIVERY_P90_MAX", "60"))
+ALERT_CACHE_KEY = "monitor:alerts"
+RATE_LIMIT_WINDOW_SECONDS = int(os.environ.get("RATE_LIMIT_WINDOW_SECONDS", "60"))
+RATE_LIMIT_DEFAULT = int(os.environ.get("RATE_LIMIT_DEFAULT", "60"))
+RATE_LIMIT_HEALTH = int(os.environ.get("RATE_LIMIT_HEALTH", "10"))
+REQUEST_MAX_BYTES = int(os.environ.get("REQUEST_MAX_BYTES", "1048576"))
+
+def _record_monitor_alert(level: str, message: str, source: str):
+    payload = {
+        "level": level,
+        "message": message,
+        "source": source,
+        "createdAt": _utcnow().isoformat()
+    }
+    alerts = cache.get(ALERT_CACHE_KEY) or []
+    alerts.insert(0, payload)
+    cache.set(ALERT_CACHE_KEY, alerts[:100], ttl_seconds=86400)
+    if level == "error":
+        logger.error(f"[monitor:{source}] {message}")
+    elif level == "warn" or level == "warning":
+        logger.warning(f"[monitor:{source}] {message}")
+    else:
+        logger.info(f"[monitor:{source}] {message}")
+
+def check_system_alerts():
+    try:
+        delivery = get_delivery_observability(1)
+        success_rate = delivery.get("success_rate", 1.0)
+        if success_rate < ALERT_SUCCESS_RATE_MIN:
+            _record_monitor_alert("warn", f"delivery_success_rate_low:{success_rate:.3f}", "delivery")
+        dispatch_p90 = delivery.get("dispatch_delay_p90_seconds")
+        if dispatch_p90 is not None and dispatch_p90 > ALERT_DELIVERY_P90_MAX:
+            _record_monitor_alert("warn", f"dispatch_delay_p90_high:{dispatch_p90}", "delivery")
+    except Exception as e:
+        _record_monitor_alert("error", f"alert_check_failed:{e}", "monitor")
+    if redis_client:
+        try:
+            depth = int(redis_client.zcard(redis_queue_key))
+            if depth > ALERT_QUEUE_DEPTH_MAX:
+                _record_monitor_alert("warn", f"queue_depth_high:{depth}", "queue")
+            oldest = redis_client.zrange(redis_queue_key, 0, 0, withscores=True)
+            if oldest:
+                oldest_due_seconds = int(_utcnow().timestamp() - float(oldest[0][1]))
+                if oldest_due_seconds > ALERT_QUEUE_AGE_MAX_SECONDS:
+                    _record_monitor_alert("warn", f"queue_oldest_due_high:{oldest_due_seconds}", "queue")
+        except Exception as e:
+            _record_monitor_alert("warn", f"queue_check_failed:{e}", "queue")
 
 # Scheduler Jobs
 def update_whale_data():
@@ -288,7 +416,7 @@ def expire_trials():
             '''
         )
         rows = cursor.fetchall()
-        now = datetime.utcnow()
+        now = _utcnow()
         expiring_window = now + timedelta(hours=24)
         for row in rows:
             try:
@@ -315,7 +443,7 @@ def expire_trials():
                         )
                         if delivered:
                             save_analytics_event(user_id, "trial_expired_notice", None)
-                    now_str = datetime.utcnow().isoformat()
+                    now_str = _utcnow().isoformat()
                     set_user_entitlements(
                         user_id=user_id,
                         tier="free",
@@ -327,23 +455,97 @@ def expire_trials():
     finally:
         conn.close()
 
-def deliver_notification(user_id: int, signal_id: int) -> bool:
+def _deliver_signal_notification(
+    user_id: int,
+    signal_id: int,
+    attempt_id: Optional[int],
+    mode: str,
+    delay_seconds: int,
+    retry_count: int
+) -> dict:
+    now = _utcnow()
     signal = get_signal_by_id(signal_id)
     if not signal:
-        return False
+        if attempt_id:
+            update_notification_attempt(attempt_id, status="failed", retry_count=retry_count, error="signal_not_found")
+        return {"sent": False, "retryable": False, "error": "signal_not_found"}
+
     settings = get_notification_settings(user_id)
     if not settings.get("push_enabled", True):
-        return False
+        if attempt_id:
+            update_notification_attempt(attempt_id, status="disabled", retry_count=retry_count)
+        else:
+            create_notification_attempt(
+                user_id=user_id,
+                signal_id=signal_id,
+                mode=mode,
+                status="disabled",
+                delay_seconds=delay_seconds,
+                deliver_at=now.strftime("%Y-%m-%d %H:%M:%S")
+            )
+        return {"sent": False, "retryable": False, "error": "disabled"}
+
     tokens = get_fcm_tokens_for_user(user_id)
     if not tokens:
-        return False
-    fcm_service.send_multicast(
+        if attempt_id:
+            update_notification_attempt(attempt_id, status="no_tokens", retry_count=retry_count)
+        else:
+            create_notification_attempt(
+                user_id=user_id,
+                signal_id=signal_id,
+                mode=mode,
+                status="no_tokens",
+                delay_seconds=delay_seconds,
+                deliver_at=now.strftime("%Y-%m-%d %H:%M:%S")
+            )
+        return {"sent": False, "retryable": False, "error": "no_tokens"}
+
+    if not attempt_id:
+        attempt_id = create_notification_attempt(
+            user_id=user_id,
+            signal_id=signal_id,
+            mode=mode,
+            status="sending",
+            delay_seconds=delay_seconds,
+            deliver_at=now.strftime("%Y-%m-%d %H:%M:%S")
+        )
+
+    sent_at = _utcnow()
+    data = {"signalId": str(signal["id"]), "attemptId": str(attempt_id), "sentAt": sent_at.isoformat()}
+    result = fcm_service.send_multicast(
         tokens=tokens,
         title="PolyPulse Signal",
         body=signal["title"],
-        data={"signalId": str(signal["id"])}
+        data=data
     )
-    return True
+    success_count = int(result.get("successCount") or 0)
+    failure_count = int(result.get("failureCount") or 0)
+    err = result.get("error")
+    status_value = "sent" if success_count > 0 else "failed"
+    update_notification_attempt(
+        attempt_id,
+        status=status_value,
+        sent_at=sent_at.strftime("%Y-%m-%d %H:%M:%S"),
+        token_count=len(tokens),
+        success_count=success_count,
+        failure_count=failure_count,
+        retry_count=retry_count,
+        error=err
+    )
+    max_retries = int(os.environ.get("NOTIFY_MAX_RETRIES") or "3")
+    retryable = (status_value == "failed") and (retry_count < max_retries) and (err not in {"firebase_not_initialized", "no_tokens"})
+    return {"sent": success_count > 0, "retryable": retryable, "error": err}
+
+def deliver_notification(user_id: int, signal_id: int) -> bool:
+    result = _deliver_signal_notification(
+        user_id=user_id,
+        signal_id=signal_id,
+        attempt_id=None,
+        mode="direct",
+        delay_seconds=0,
+        retry_count=0
+    )
+    return bool(result.get("sent"))
 
 def deliver_trial_notification(user_id: int, title: str, body: str, data: dict) -> bool:
     settings = get_notification_settings(user_id)
@@ -360,27 +562,69 @@ def deliver_trial_notification(user_id: int, title: str, body: str, data: dict) 
     )
     return True
 
-def enqueue_notification_job(user_id: int, signal_id: int, deliver_at: datetime) -> bool:
+def enqueue_notification_job(user_id: int, signal_id: int, deliver_at: datetime, delay_seconds: int) -> int:
     if not redis_client:
-        return False
-    payload = json.dumps({"userId": user_id, "signalId": signal_id})
-    redis_client.zadd(redis_queue_key, {payload: deliver_at.timestamp()})
-    return True
+        return 0
+    queued_at = _utcnow()
+    status_value = "queued" if delay_seconds == 0 else "delayed"
+    attempt_id = create_notification_attempt(
+        user_id=user_id,
+        signal_id=signal_id,
+        mode="redis",
+        status=status_value,
+        delay_seconds=delay_seconds,
+        queued_at=queued_at.strftime("%Y-%m-%d %H:%M:%S"),
+        deliver_at=deliver_at.strftime("%Y-%m-%d %H:%M:%S")
+    )
+    try:
+        payload = json.dumps({"attemptId": attempt_id, "userId": user_id, "signalId": signal_id, "retry": 0})
+        redis_client.zadd(redis_queue_key, {payload: deliver_at.timestamp()})
+        return int(attempt_id or 0)
+    except Exception as e:
+        update_notification_attempt(attempt_id, status="failed", error=str(e))
+        return 0
 
 def process_notification_queue():
     if not redis_client:
         return
-    now_ts = datetime.utcnow().timestamp()
-    jobs = redis_client.zrangebyscore(redis_queue_key, 0, now_ts, start=0, num=200)
-    if not jobs:
+    try:
+        now_ts = _utcnow().timestamp()
+        jobs = redis_client.zrangebyscore(redis_queue_key, 0, now_ts, start=0, num=200)
+        if not jobs:
+            return
+        redis_client.zrem(redis_queue_key, *jobs)
+        for raw in jobs:
+            try:
+                payload = json.loads(raw)
+                attempt_id = int(payload.get("attemptId") or 0)
+                retry_count = int(payload.get("retry") or 0)
+                user_id = int(payload["userId"])
+                signal_id = int(payload["signalId"])
+                result = _deliver_signal_notification(
+                    user_id=user_id,
+                    signal_id=signal_id,
+                    attempt_id=attempt_id if attempt_id > 0 else None,
+                    mode="redis",
+                    delay_seconds=0,
+                    retry_count=retry_count
+                )
+                if result.get("sent"):
+                    continue
+                if not result.get("retryable"):
+                    continue
+                if attempt_id <= 0:
+                    continue
+                next_retry = retry_count + 1
+                base = int(os.environ.get("NOTIFY_RETRY_BASE_SECONDS") or "10")
+                backoff = base * (2 ** (next_retry - 1))
+                deliver_at = _utcnow() + timedelta(seconds=backoff)
+                update_notification_attempt(attempt_id, status="queued", retry_count=next_retry, error=result.get("error"))
+                next_payload = json.dumps({"attemptId": attempt_id, "userId": user_id, "signalId": signal_id, "retry": next_retry})
+                redis_client.zadd(redis_queue_key, {next_payload: deliver_at.timestamp()})
+            except Exception:
+                continue
+    except Exception:
         return
-    redis_client.zrem(redis_queue_key, *jobs)
-    for raw in jobs:
-        try:
-            payload = json.loads(raw)
-            deliver_notification(payload["userId"], payload["signalId"])
-        except Exception:
-            continue
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -398,6 +642,7 @@ async def lifespan(app: FastAPI):
         scheduler.add_job(refresh_polymarket_data, 'interval', minutes=1)
         scheduler.add_job(expire_trials, 'interval', hours=24)
         scheduler.add_job(process_notification_queue, 'interval', seconds=5)
+        scheduler.add_job(check_system_alerts, 'interval', seconds=60)
         auto_interval = int(os.environ.get("AUTO_SIGNAL_BROADCAST_INTERVAL_SECONDS") or "0")
         if auto_interval > 0:
             scheduler.add_job(generate_demo_signal_and_broadcast, 'interval', seconds=auto_interval)
@@ -407,6 +652,7 @@ async def lifespan(app: FastAPI):
         scheduler.add_job(refresh_polymarket_data)
         scheduler.add_job(expire_trials)
         scheduler.add_job(process_notification_queue)
+        scheduler.add_job(check_system_alerts)
         if auto_interval > 0:
             scheduler.add_job(generate_demo_signal_and_broadcast)
     
@@ -419,14 +665,93 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="PolyPulse API", lifespan=lifespan)
 
-# CORS
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+# CORS - 安全配置
+_origins_env = os.environ.get("FRONTEND_ORIGINS") or "http://localhost:3000,http://localhost:8000"
+_allowed_origins = [o.strip() for o in _origins_env.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Requested-With", "X-Request-ID"],
+    expose_headers=["X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset", "X-Request-ID", "X-Response-Time-ms", "Server-Timing"],
+    max_age=600,  # 10分钟
 )
+
+app.middleware("http")(performance_middleware)
+
+@app.middleware("http")
+async def rate_limit_middleware(request: Request, call_next):
+    path = request.url.path
+    if path in ("/docs", "/redoc", "/openapi.json"):
+        return await call_next(request)
+    limit = RATE_LIMIT_HEALTH if path == "/health" else RATE_LIMIT_DEFAULT
+    key = _rate_limit_key(request)
+    if rate_limiter.is_rate_limited(key, limit, RATE_LIMIT_WINDOW_SECONDS):
+        headers = rate_limiter.get_rate_limit_headers(key, limit, RATE_LIMIT_WINDOW_SECONDS)
+        return JSONResponse(
+            status_code=429,
+            content={
+                "error": "rate_limit_exceeded",
+                "message": "Too many requests. Please try again later.",
+                "retry_after": RATE_LIMIT_WINDOW_SECONDS
+            },
+            headers=headers
+        )
+    response = await call_next(request)
+    headers = rate_limiter.get_rate_limit_headers(key, limit, RATE_LIMIT_WINDOW_SECONDS)
+    for header_key, header_value in headers.items():
+        response.headers[header_key] = header_value
+    return response
+
+@app.middleware("http")
+async def request_guard_middleware(request: Request, call_next):
+    request_id = request.headers.get("X-Request-ID") or secrets.token_hex(12)
+    if request.method in ("POST", "PUT", "PATCH"):
+        content_length = request.headers.get("Content-Length")
+        if content_length is not None:
+            try:
+                if int(content_length) > REQUEST_MAX_BYTES:
+                    return JSONResponse(
+                        status_code=413,
+                        content={
+                            "error": "payload_too_large",
+                            "message": "Request payload too large."
+                        },
+                        headers={"X-Request-ID": request_id}
+                    )
+            except ValueError:
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "error": "invalid_content_length",
+                        "message": "Invalid Content-Length header."
+                    },
+                    headers={"X-Request-ID": request_id}
+                )
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    return response
+
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+    response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+    response.headers["Cross-Origin-Resource-Policy"] = "same-site"
+    response.headers["X-DNS-Prefetch-Control"] = "off"
+    response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+    path = request.url.path
+    if path in ("/token", "/register") or path.startswith(("/billing", "/notifications", "/watchlist", "/trial", "/entitlements", "/referral", "/analytics")):
+        response.headers["Cache-Control"] = "no-store"
+    if request.url.scheme == "https":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
 
 # Auth
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
@@ -503,7 +828,7 @@ def _resolve_tier_for_user(user_id: int) -> str:
     if not entitlement:
         return "free"
     try:
-        if datetime.fromisoformat(entitlement["expires_at"]) >= datetime.utcnow():
+        if datetime.fromisoformat(entitlement["expires_at"]) >= _utcnow():
             return entitlement["tier"]
     except Exception:
         return entitlement["tier"]
@@ -529,7 +854,7 @@ def _is_trial_expired(user_id: int) -> bool:
     if entitlement.get("tier") != "free":
         return False
     try:
-        return datetime.fromisoformat(expires_at) < datetime.utcnow()
+        return datetime.fromisoformat(expires_at) < _utcnow()
     except Exception:
         return False
 
@@ -588,12 +913,29 @@ def _broadcast_signal_to_users(signal_id: int) -> dict:
         tier = _resolve_tier_for_user(user_id)
         delay_seconds = _notification_delay_seconds(signal["tier_required"], tier)
         if redis_client:
-            deliver_at = datetime.utcnow() + timedelta(seconds=delay_seconds)
-            enqueue_notification_job(user_id, signal_id, deliver_at)
+            deliver_at = _utcnow() + timedelta(seconds=delay_seconds)
+            attempt_id = enqueue_notification_job(user_id, signal_id, deliver_at, delay_seconds)
+            if attempt_id:
+                if delay_seconds > 0:
+                    delayed += 1
+                else:
+                    queued += 1
+                continue
             if delay_seconds > 0:
+                create_notification_attempt(
+                    user_id=user_id,
+                    signal_id=signal_id,
+                    mode="direct",
+                    status="delayed",
+                    delay_seconds=delay_seconds,
+                    deliver_at=deliver_at.strftime("%Y-%m-%d %H:%M:%S")
+                )
                 delayed += 1
+                continue
+            if deliver_notification(user_id, signal_id):
+                sent += 1
             else:
-                queued += 1
+                skipped += 1
             continue
         if delay_seconds > 0:
             skipped += 1
@@ -612,7 +954,7 @@ def _broadcast_signal_to_users(signal_id: int) -> dict:
     }
 
 def generate_demo_signal_and_broadcast() -> dict:
-    now = datetime.utcnow()
+    now = _utcnow()
     title = f"Daily Pulse {now.strftime('%Y-%m-%d %H:%M UTC')}"
     content = "Top moves and whale activity. Unlock for details."
     tier_required = "pro"
@@ -631,7 +973,7 @@ def register(user: UserRegister):
     user_id = create_user(user.email, hashed_pw)
     
     if not user_id:
-        raise HTTPException(status_code=500, detail="Failed to create user")
+        raise HTTPException(status_code=400, detail="Email already registered")
     save_analytics_event(user_id, "signup", None)
     return {"id": user_id, "email": user.email, "created_at": "now"}
 
@@ -697,91 +1039,100 @@ def get_leaderboard(current_user: dict = Depends(get_current_user)):
 
 @app.get("/api/whales")
 def api_get_whales(limit: int = 50, offset: int = 0, sort: str = "latest"):
-    session = get_session()
-    try:
-        query = session.query(Whale, Trade).join(Trade, Whale.trade_id == Trade.id)
-        if sort == "value":
-            query = query.order_by(Whale.value.desc())
-        else:
-            query = query.order_by(Whale.timestamp.desc())
-        rows = query.offset(offset).limit(limit).all()
-        if rows:
+    limit, offset = _sanitize_pagination(limit, offset, 200)
+    cache_key = _cache_key("whales", [str(limit), str(offset), sort])
+    def build():
+        session = get_session()
+        try:
+            query = session.query(Whale, Trade).join(Trade, Whale.trade_id == Trade.id)
+            if sort == "value":
+                query = query.order_by(Whale.value.desc())
+            else:
+                query = query.order_by(Whale.timestamp.desc())
+            rows = query.offset(offset).limit(limit).all()
+            if rows:
+                return [
+                    {
+                        "trade_id": whale.trade_id,
+                        "market_question": trade.question,
+                        "outcome": "",
+                        "side": trade.side,
+                        "price": trade.price,
+                        "size": trade.size,
+                        "value_usd": whale.value,
+                        "timestamp": whale.timestamp.isoformat(),
+                        "maker_address": whale.address,
+                        "market_slug": trade.market
+                    }
+                    for whale, trade in rows
+                ]
+        finally:
+            session.close()
+        conn = get_db_connection()
+        try:
+            cursor = conn.cursor()
+            order_by = "value_usd DESC" if sort == "value" else "timestamp DESC"
+            cursor.execute(
+                f"""
+                SELECT id, timestamp, maker_address, market_question, outcome, side, size, price, value_usd, market_slug
+                FROM whale_trades
+                ORDER BY {order_by}
+                LIMIT ? OFFSET ?
+                """,
+                (limit, offset)
+            )
+            rows = cursor.fetchall()
             return [
                 {
-                    "trade_id": whale.trade_id,
-                    "market_question": trade.question,
-                    "outcome": "",
-                    "side": trade.side,
-                    "price": trade.price,
-                    "size": trade.size,
-                    "value_usd": whale.value,
-                    "timestamp": whale.timestamp.isoformat(),
-                    "maker_address": whale.address,
-                    "market_slug": trade.market
+                    "trade_id": f"sqlite-{row['id']}",
+                    "market_question": row["market_question"],
+                    "outcome": row["outcome"],
+                    "side": row["side"],
+                    "price": row["price"],
+                    "size": row["size"],
+                    "value_usd": row["value_usd"],
+                    "timestamp": datetime.fromtimestamp(row["timestamp"], timezone.utc).replace(tzinfo=None).isoformat(),
+                    "maker_address": row["maker_address"],
+                    "market_slug": row["market_slug"]
                 }
-                for whale, trade in rows
+                for row in rows
             ]
-    finally:
-        session.close()
-    conn = get_db_connection()
-    try:
-        cursor = conn.cursor()
-        order_by = "value_usd DESC" if sort == "value" else "timestamp DESC"
-        cursor.execute(
-            f"""
-            SELECT id, timestamp, maker_address, market_question, outcome, side, size, price, value_usd, market_slug
-            FROM whale_trades
-            ORDER BY {order_by}
-            LIMIT ? OFFSET ?
-            """,
-            (limit, offset)
-        )
-        rows = cursor.fetchall()
-        return [
-            {
-                "trade_id": f"sqlite-{row['id']}",
-                "market_question": row["market_question"],
-                "outcome": row["outcome"],
-                "side": row["side"],
-                "price": row["price"],
-                "size": row["size"],
-                "value_usd": row["value_usd"],
-                "timestamp": datetime.utcfromtimestamp(row["timestamp"]).isoformat(),
-                "maker_address": row["maker_address"],
-                "market_slug": row["market_slug"]
-            }
-            for row in rows
-        ]
-    finally:
-        conn.close()
+        finally:
+            conn.close()
+    return _cached_response(cache_key, 10, build)
 
 
 @app.get("/api/whales/leaderboard")
 def api_whale_leaderboard(limit: int = 50, offset: int = 0):
+    limit, offset = _sanitize_pagination(limit, offset, 200)
     return api_get_whales(limit=limit, offset=offset, sort="value")
 
 
 @app.get("/api/trades")
 def api_get_trades(limit: int = 100, offset: int = 0):
-    session = get_session()
-    try:
-        rows = session.query(Trade).order_by(Trade.timestamp.desc()).offset(offset).limit(limit).all()
-        return [
-            {
-                "id": trade.id,
-                "market_question": trade.question,
-                "address": trade.address,
-                "side": trade.side,
-                "price": trade.price,
-                "size": trade.size,
-                "value": trade.value,
-                "timestamp": trade.timestamp.isoformat(),
-                "market": trade.market
-            }
-            for trade in rows
-        ]
-    finally:
-        session.close()
+    limit, offset = _sanitize_pagination(limit, offset, 200)
+    cache_key = _cache_key("trades", [str(limit), str(offset)])
+    def build():
+        session = get_session()
+        try:
+            rows = session.query(Trade).order_by(Trade.timestamp.desc()).offset(offset).limit(limit).all()
+            return [
+                {
+                    "id": trade.id,
+                    "market_question": trade.question,
+                    "address": trade.address,
+                    "side": trade.side,
+                    "price": trade.price,
+                    "size": trade.size,
+                    "value": trade.value,
+                    "timestamp": trade.timestamp.isoformat(),
+                    "market": trade.market
+                }
+                for trade in rows
+            ]
+        finally:
+            session.close()
+    return _cached_response(cache_key, 10, build)
 
 
 @app.get("/signals", response_model=List[SignalResponse])
@@ -790,37 +1141,170 @@ def get_signals_api(
     offset: int = 0,
     current_user: dict = Depends(get_optional_user)
 ):
+    limit, offset = _sanitize_pagination(limit, offset, 200)
     tier = "free"
     if current_user:
         tier = _resolve_tier_for_user(current_user["id"])
-    rows = get_signals(limit=limit, offset=offset)
-    response = []
-    for row in rows:
-        required = row["tier_required"]
-        locked = _is_signal_locked(required, tier)
-        evidence = None
-        if row["evidence_json"]:
-            evidence = SignalEvidence(**json.loads(row["evidence_json"]))
-        response.append(
-            SignalResponse(
-                id=row["id"],
-                title=row["title"],
-                content=None if locked else row["content"],
-                locked=locked,
-                tierRequired=required,
-                createdAt=row["created_at"],
-                evidence=evidence
+    cache_key = _cache_key("signals", [tier, str(limit), str(offset)])
+    def build():
+        rows = get_signals(limit=limit, offset=offset)
+        response = []
+        for row in rows:
+            required = row["tier_required"]
+            locked = _is_signal_locked(required, tier)
+            evidence_payload = None
+            if row["evidence_json"]:
+                evidence_payload = SignalEvidence(**json.loads(row["evidence_json"])).model_dump()
+            response.append(
+                {
+                    "id": row["id"],
+                    "title": row["title"],
+                    "content": None if locked else row["content"],
+                    "locked": locked,
+                    "tierRequired": required,
+                    "createdAt": row["created_at"],
+                    "evidence": evidence_payload
+                }
             )
-        )
-    return response
+        return response
+    return _cached_response(cache_key, 15, build)
 
 @app.get("/signals/stats", response_model=SignalStatsResponse)
 def get_signal_stats_api():
-    stats = get_signal_stats()
-    return SignalStatsResponse(
-        signals7d=stats["signals_7d"],
-        evidence7d=stats["evidence_7d"]
+    cache_key = _cache_key("signals_stats", ["7"])
+    def build():
+        stats = get_signal_stats()
+        return SignalStatsResponse(
+            signals7d=stats["signals_7d"],
+            evidence7d=stats["evidence_7d"]
+        ).model_dump()
+    return _cached_response(cache_key, 30, build)
+
+@app.get("/insights/credibility", response_model=SignalCredibilityResponse)
+def get_signal_credibility_api():
+    cache_key = _cache_key("insights_credibility", ["7", "30"])
+    def build():
+        w7 = get_signal_credibility(7)
+        w30 = get_signal_credibility(30)
+        payload = SignalCredibilityResponse(
+            window7d=SignalCredibilityWindowResponse(
+                windowDays=w7["window_days"],
+                signalsTotal=w7["signals_total"],
+                signalsWithEvidence=w7["signals_with_evidence"],
+                evidenceRate=w7["evidence_rate"],
+                evaluatedTotal=w7["evaluated_total"],
+                hitTotal=w7["hit_total"],
+                hitRate=w7["hit_rate"],
+                hitRateCiLow=w7["hit_rate_ci_low"],
+                hitRateCiHigh=w7["hit_rate_ci_high"],
+                latencyCount=w7["latency_count"],
+                latencyP50Seconds=w7["latency_p50_seconds"],
+                latencyP90Seconds=w7["latency_p90_seconds"],
+                latencyHistogram=[SignalCredibilityHistogramItem(**item) for item in w7["latency_histogram"]],
+                leadCount=w7["lead_count"],
+                leadP50Seconds=w7["lead_p50_seconds"],
+                leadP90Seconds=w7["lead_p90_seconds"],
+                leadHistogram=[SignalCredibilityHistogramItem(**item) for item in w7["lead_histogram"]]
+            ),
+            window30d=SignalCredibilityWindowResponse(
+                windowDays=w30["window_days"],
+                signalsTotal=w30["signals_total"],
+                signalsWithEvidence=w30["signals_with_evidence"],
+                evidenceRate=w30["evidence_rate"],
+                evaluatedTotal=w30["evaluated_total"],
+                hitTotal=w30["hit_total"],
+                hitRate=w30["hit_rate"],
+                hitRateCiLow=w30["hit_rate_ci_low"],
+                hitRateCiHigh=w30["hit_rate_ci_high"],
+                latencyCount=w30["latency_count"],
+                latencyP50Seconds=w30["latency_p50_seconds"],
+                latencyP90Seconds=w30["latency_p90_seconds"],
+                latencyHistogram=[SignalCredibilityHistogramItem(**item) for item in w30["latency_histogram"]],
+                leadCount=w30["lead_count"],
+                leadP50Seconds=w30["lead_p50_seconds"],
+                leadP90Seconds=w30["lead_p90_seconds"],
+                leadHistogram=[SignalCredibilityHistogramItem(**item) for item in w30["lead_histogram"]]
+            )
+        )
+        return payload.model_dump()
+    return _cached_response(cache_key, 60, build)
+
+@app.get("/insights/delivery", response_model=DeliveryObservabilityResponse)
+def get_delivery_observability_api():
+    cache_key = _cache_key("insights_delivery", ["1", "7"])
+    def build():
+        w1 = get_delivery_observability(1)
+        w7 = get_delivery_observability(7)
+        queue_depth = None
+        oldest_due_seconds = None
+        if redis_client:
+            try:
+                queue_depth = int(redis_client.zcard(redis_queue_key))
+                oldest = redis_client.zrange(redis_queue_key, 0, 0, withscores=True)
+                if oldest:
+                    score = float(oldest[0][1])
+                    oldest_due_seconds = int(_utcnow().timestamp() - score)
+            except Exception:
+                queue_depth = None
+                oldest_due_seconds = None
+        payload = DeliveryObservabilityResponse(
+            window1d=DeliveryWindowResponse(
+                windowDays=w1["window_days"],
+                attemptsTotal=w1["attempts_total"],
+                queued=w1["queued"],
+                delayed=w1["delayed"],
+                sent=w1["sent"],
+                failed=w1["failed"],
+                noTokens=w1["no_tokens"],
+                disabled=w1["disabled"],
+                successRate=w1["success_rate"],
+                pushOpenCount=w1["push_open_count"],
+                clickThroughRate=w1["click_through_rate"],
+                queueDelayP50Seconds=w1["queue_delay_p50_seconds"],
+                queueDelayP90Seconds=w1["queue_delay_p90_seconds"],
+                dispatchDelayP50Seconds=w1["dispatch_delay_p50_seconds"],
+                dispatchDelayP90Seconds=w1["dispatch_delay_p90_seconds"]
+            ),
+            window7d=DeliveryWindowResponse(
+                windowDays=w7["window_days"],
+                attemptsTotal=w7["attempts_total"],
+                queued=w7["queued"],
+                delayed=w7["delayed"],
+                sent=w7["sent"],
+                failed=w7["failed"],
+                noTokens=w7["no_tokens"],
+                disabled=w7["disabled"],
+                successRate=w7["success_rate"],
+                pushOpenCount=w7["push_open_count"],
+                clickThroughRate=w7["click_through_rate"],
+                queueDelayP50Seconds=w7["queue_delay_p50_seconds"],
+                queueDelayP90Seconds=w7["queue_delay_p90_seconds"],
+                dispatchDelayP50Seconds=w7["dispatch_delay_p50_seconds"],
+                dispatchDelayP90Seconds=w7["dispatch_delay_p90_seconds"]
+            ),
+            redisQueueDepth=queue_depth,
+            redisOldestDueSeconds=oldest_due_seconds
+        )
+        return payload.model_dump()
+    return _cached_response(cache_key, 30, build)
+
+@app.post("/admin/signals/{signal_id}/evaluation")
+def admin_upsert_signal_evaluation(
+    signal_id: int,
+    payload: AdminSignalEvaluationRequest,
+    request: Request,
+    x_admin_key: Optional[str] = Header(default=None, alias="X-Admin-Key")
+):
+    _require_admin(request, x_admin_key)
+    if not get_signal_by_id(signal_id):
+        raise HTTPException(status_code=404, detail="Signal not found")
+    upsert_signal_evaluation(
+        signal_id=signal_id,
+        is_hit=payload.isHit,
+        lead_seconds=payload.leadSeconds,
+        evaluated_at=payload.evaluatedAt
     )
+    return {"status": "ok"}
 
 
 @app.get("/signals/{signal_id}", response_model=SignalResponse)
@@ -879,7 +1363,7 @@ def get_in_app_message(current_user: dict = Depends(get_current_user)):
 
 @app.post("/trial/start", response_model=TrialStartResponse)
 def start_trial(current_user: dict = Depends(get_current_user)):
-    start_at = datetime.utcnow()
+    start_at = _utcnow()
     end_at = start_at + timedelta(days=7)
     start_at_str = start_at.isoformat()
     end_at_str = end_at.isoformat()
@@ -926,11 +1410,32 @@ def send_notification(
     target_tier = _resolve_tier_for_user(payload.userId)
     delay_seconds = _notification_delay_seconds(signal["tier_required"], target_tier)
     if redis_client:
-        deliver_at = datetime.utcnow() + timedelta(seconds=delay_seconds)
-        enqueue_notification_job(payload.userId, payload.signalId, deliver_at)
-        return {"status": "queued" if delay_seconds == 0 else "delayed"}
+        deliver_at = _utcnow() + timedelta(seconds=delay_seconds)
+        attempt_id = enqueue_notification_job(payload.userId, payload.signalId, deliver_at, delay_seconds)
+        if attempt_id:
+            return {"status": "queued" if delay_seconds == 0 else "delayed", "attemptId": attempt_id}
+        if delay_seconds > 0:
+            attempt_id = create_notification_attempt(
+                user_id=payload.userId,
+                signal_id=payload.signalId,
+                mode="direct",
+                status="delayed",
+                delay_seconds=delay_seconds,
+                deliver_at=deliver_at.strftime("%Y-%m-%d %H:%M:%S")
+            )
+            return {"status": "delayed", "attemptId": attempt_id}
+        sent = deliver_notification(payload.userId, payload.signalId)
+        return {"status": "sent" if sent else "no_tokens"}
     if delay_seconds > 0:
-        return {"status": "delayed"}
+        attempt_id = create_notification_attempt(
+            user_id=payload.userId,
+            signal_id=payload.signalId,
+            mode="direct",
+            status="delayed",
+            delay_seconds=delay_seconds,
+            deliver_at=(_utcnow() + timedelta(seconds=delay_seconds)).strftime("%Y-%m-%d %H:%M:%S")
+        )
+        return {"status": "delayed", "attemptId": attempt_id}
     sent = deliver_notification(payload.userId, payload.signalId)
     return {"status": "sent" if sent else "no_tokens"}
 
@@ -999,7 +1504,7 @@ def get_referral_code_api(current_user: dict = Depends(get_current_user)):
     if existing:
         return ReferralCodeResponse(code=existing)
     code = None
-    for _ in range(5):
+    for _ in range(10):
         candidate = secrets.token_urlsafe(6).replace("-", "").replace("_", "")[:8]
         try:
             insert_referral_code(current_user["id"], candidate)
@@ -1008,7 +1513,7 @@ def get_referral_code_api(current_user: dict = Depends(get_current_user)):
         except Exception:
             continue
     if not code:
-        raise HTTPException(status_code=500, detail="Failed to generate referral code")
+        raise HTTPException(status_code=400, detail="Failed to generate unique referral code")
     return ReferralCodeResponse(code=code)
 
 
@@ -1035,82 +1540,96 @@ def feature_flags(current_user: dict = Depends(get_optional_user)):
 
 @app.get("/metrics", response_model=MetricsResponse)
 def metrics():
-    return MetricsResponse(**get_metrics_counts())
+    cache_key = _cache_key("metrics_counts", [])
+    def build():
+        return MetricsResponse(**get_metrics_counts()).model_dump()
+    return _cached_response(cache_key, 5, build)
 
 
 @app.get("/api/smart")
 def api_get_smart_wallets(limit: int = 50, offset: int = 0):
-    session = get_session()
-    try:
-        rows = session.query(SmartWallet).order_by(SmartWallet.profit.desc()).offset(offset).limit(limit).all()
-        if rows:
-            return [
-                {
-                    "address": wallet.address,
-                    "profit": wallet.profit,
-                    "roi": wallet.roi,
-                    "win_rate": wallet.win_rate,
-                    "total_trades": wallet.total_trades
-                }
-                for wallet in rows
-            ]
-        whale_rows = (
-            session.query(
-                Whale.address.label("address"),
-                func.sum(Whale.value).label("total_value"),
-                func.count(Whale.trade_id).label("total_trades")
+    limit, offset = _sanitize_pagination(limit, offset, 200)
+    cache_key = _cache_key("smart", [str(limit), str(offset)])
+    def build():
+        session = get_session()
+        try:
+            rows = session.query(SmartWallet).order_by(SmartWallet.profit.desc()).offset(offset).limit(limit).all()
+            if rows:
+                return [
+                    {
+                        "address": wallet.address,
+                        "profit": wallet.profit,
+                        "roi": wallet.roi,
+                        "win_rate": wallet.win_rate,
+                        "total_trades": wallet.total_trades
+                    }
+                    for wallet in rows
+                ]
+            whale_rows = (
+                session.query(
+                    Whale.address.label("address"),
+                    func.sum(Whale.value).label("total_value"),
+                    func.count(Whale.trade_id).label("total_trades")
+                )
+                .group_by(Whale.address)
+                .order_by(func.sum(Whale.value).desc())
+                .offset(offset)
+                .limit(limit)
+                .all()
             )
-            .group_by(Whale.address)
-            .order_by(func.sum(Whale.value).desc())
-            .offset(offset)
-            .limit(limit)
-            .all()
-        )
-        if whale_rows:
+            if whale_rows:
+                return [
+                    {
+                        "address": row.address,
+                        "profit": row.total_value,
+                        "roi": 0.0,
+                        "win_rate": 0.0,
+                        "total_trades": row.total_trades
+                    }
+                    for row in whale_rows
+                ]
+        finally:
+            session.close()
+        conn = get_db_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT maker_address as address,
+                       SUM(value_usd) as total_value,
+                       COUNT(*) as total_trades
+                FROM whale_trades
+                GROUP BY maker_address
+                ORDER BY total_value DESC
+                LIMIT ? OFFSET ?
+                """,
+                (limit, offset)
+            )
+            rows = cursor.fetchall()
             return [
                 {
-                    "address": row.address,
-                    "profit": row.total_value,
+                    "address": row["address"],
+                    "profit": row["total_value"],
                     "roi": 0.0,
                     "win_rate": 0.0,
-                    "total_trades": row.total_trades
+                    "total_trades": row["total_trades"]
                 }
-                for row in whale_rows
+                for row in rows
             ]
-    finally:
-        session.close()
-    conn = get_db_connection()
-    try:
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT maker_address as address,
-                   SUM(value_usd) as total_value,
-                   COUNT(*) as total_trades
-            FROM whale_trades
-            GROUP BY maker_address
-            ORDER BY total_value DESC
-            LIMIT ? OFFSET ?
-            """,
-            (limit, offset)
-        )
-        rows = cursor.fetchall()
-        return [
-            {
-                "address": row["address"],
-                "profit": row["total_value"],
-                "roi": 0.0,
-                "win_rate": 0.0,
-                "total_trades": row["total_trades"]
-            }
-            for row in rows
-        ]
-    finally:
-        conn.close()
+        finally:
+            conn.close()
+    return _cached_response(cache_key, 15, build)
 
 
 @app.post("/api/refresh")
-def api_refresh():
+def api_refresh(
+    request: Request,
+    x_admin_key: Optional[str] = Header(default=None, alias="X-Admin-Key")
+):
+    if os.environ.get("ADMIN_API_KEY") and not os.environ.get("PYTEST_CURRENT_TEST"):
+        host = request.client.host if request.client else ""
+        if host not in ("127.0.0.1", "::1", "localhost", "testclient", "testserver"):
+            _require_admin(request, x_admin_key)
     refresh_polymarket_data()
     return {"status": "ok"}
 
@@ -1126,7 +1645,7 @@ def verify_billing(
         "subscribe_verify",
         json.dumps({"platform": request.platform, "productId": request.productId, "planId": plan_id})
     )
-    start_at = datetime.utcnow()
+    start_at = _utcnow()
     end_at = start_at + timedelta(days=_duration_days_for_plan(plan_id))
     start_at_str = start_at.isoformat()
     end_at_str = end_at.isoformat()
@@ -1180,7 +1699,7 @@ def billing_status(current_user: dict = Depends(get_current_user)):
     status_value = _normalize_subscription_status(subscription["status"])
     try:
         end_at = datetime.fromisoformat(subscription["end_at"])
-        if status_value in ["active", "grace"] and end_at < datetime.utcnow():
+        if status_value in ["active", "grace"] and end_at < _utcnow():
             status_value = "expired"
     except Exception:
         pass
@@ -1198,7 +1717,13 @@ def entitlements_me(current_user: dict = Depends(get_current_user)):
     return _build_entitlements_response(tier, current_user["id"])
 
 @app.post("/billing/webhook")
-def billing_webhook(payload: BillingWebhookRequest):
+def billing_webhook(
+    payload: BillingWebhookRequest,
+    x_webhook_secret: Optional[str] = Header(default=None, alias="X-Webhook-Secret")
+):
+    expected_secret = os.environ.get("BILLING_WEBHOOK_SECRET")
+    if expected_secret and x_webhook_secret != expected_secret:
+        raise HTTPException(status_code=403, detail="Forbidden")
     order_id = payload.orderId or payload.purchaseToken
     if not order_id:
         return {"status": "ignored"}
@@ -1231,7 +1756,7 @@ def billing_webhook(payload: BillingWebhookRequest):
             expires_at=end_at
         )
     else:
-        now_str = datetime.utcnow().isoformat()
+        now_str = _utcnow().isoformat()
         set_user_entitlements(
             user_id=user_id,
             tier="free",
@@ -1247,21 +1772,50 @@ def read_root():
 
 @app.get("/health")
 def health_check():
-    return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
+    return {"status": "ok", "timestamp": _utcnow().isoformat()}
+
+
+@app.get("/metrics/prometheus")
+def metrics_endpoint():
+    """Prometheus metrics endpoint for performance monitoring"""
+    return Response(
+        generate_latest(),
+        media_type=CONTENT_TYPE_LATEST
+    )
+
+
+@app.get("/performance")
+def performance_dashboard():
+    """Performance metrics dashboard"""
+    return {
+        "timestamp": _utcnow().isoformat(),
+        "metrics_available": [
+            "http_requests_total",
+            "http_request_duration_seconds", 
+            "db_query_duration_seconds",
+            "redis_operation_duration_seconds"
+        ]
+    }
 
 
 @app.post("/monitor/alert")
-def monitor_alert(payload: MonitorAlertRequest):
+def monitor_alert(
+    payload: MonitorAlertRequest,
+    request: Request,
+    x_monitor_key: Optional[str] = Header(default=None, alias="X-Monitor-Key")
+):
+    expected_key = os.environ.get("MONITOR_ALERT_KEY")
+    if expected_key and x_monitor_key != expected_key:
+        raise HTTPException(status_code=403, detail="Forbidden")
     level = payload.level.strip().lower()
     message = payload.message
     source = payload.source or "unknown"
-    if level == "error":
-        logger.error(f"[monitor:{source}] {message}")
-    elif level == "warn" or level == "warning":
-        logger.warning(f"[monitor:{source}] {message}")
-    else:
-        logger.info(f"[monitor:{source}] {message}")
+    _record_monitor_alert(level, message, source)
     return {"status": "ok"}
+
+@app.get("/monitor/alerts")
+def get_monitor_alerts():
+    return {"alerts": cache.get(ALERT_CACHE_KEY) or []}
 
 if __name__ == "__main__":
     import uvicorn

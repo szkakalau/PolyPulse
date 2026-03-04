@@ -106,25 +106,27 @@ fun MarketListScreen(
                 .fillMaxSize()
                 .pullRefresh(refreshState)
         ) {
-            if (state.error.isNotBlank() && !state.isLoading) {
+            if (state.isLoading && state.filteredMarkets.isEmpty()) {
+                CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+            } else if (state.error.isNotBlank()) {
                 Text(
                     text = state.error,
                     color = MaterialTheme.colorScheme.error,
                     modifier = Modifier.align(Alignment.Center)
                 )
-            }
-            
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(bottom = 16.dp)
-            ) {
-                items(state.filteredMarkets) { market ->
-                    MarketItem(
-                        market = market,
-                        isWatchlisted = state.watchlistIds.contains(market.id),
-                        onToggleWatchlist = { viewModel.toggleWatchlist(market.id) },
-                        onClick = { onMarketClick(market) }
-                    )
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(bottom = 16.dp)
+                ) {
+                    items(state.filteredMarkets) { market ->
+                        MarketItem(
+                            market = market,
+                            isWatchlisted = state.watchlistIds.contains(market.id),
+                            onToggleWatchlist = { viewModel.toggleWatchlist(market.id) },
+                            onClick = { onMarketClick(market) }
+                        )
+                    }
                 }
             }
 

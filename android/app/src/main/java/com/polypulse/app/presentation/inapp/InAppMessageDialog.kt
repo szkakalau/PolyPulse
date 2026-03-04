@@ -49,8 +49,14 @@ fun InAppMessageDialog(
                 )
 
                 message.plans?.let { plans ->
+                    val monthlyPrice = plans.firstOrNull { it.period.lowercase().contains("month") }?.price
                     plans.forEach { plan ->
-                        PaywallPlanCard(plan = plan, isSelected = false, onSelected = {})
+                        PaywallPlanCard(
+                            plan = plan,
+                            isSelected = false,
+                            onSelected = {},
+                            monthlyPrice = monthlyPrice
+                        )
                         Spacer(modifier = Modifier.height(12.dp))
                     }
                 }

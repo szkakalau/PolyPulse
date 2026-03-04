@@ -13,9 +13,10 @@ vi.mock("../api", () => ({
   ])
 }))
 
-test("renders whales header and one row", async () => {
+test("renders whales table and one row", async () => {
   render(<Whales />)
-  expect(screen.getByText("Whale Trades")).toBeInTheDocument()
+  // Header removed from component, check for table headers instead
+  expect(screen.getByText("Question")).toBeInTheDocument()
   await waitFor(() => {
     expect(screen.getByText("Will ABC happen?")).toBeInTheDocument()
   })

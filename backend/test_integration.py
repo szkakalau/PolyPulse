@@ -1,6 +1,7 @@
 import requests
 import time
 import json
+import pytest
 
 BASE_URL = "http://localhost:8000"
 SESSION = requests.Session()
@@ -9,14 +10,23 @@ SESSION.trust_env = False  # Ignore proxy env vars
 def print_step(step):
     print(f"\n{'='*20} {step} {'='*20}")
 
+def _server_available() -> bool:
+    try:
+        r = SESSION.get(f"{BASE_URL}/health", timeout=2)
+        return r.status_code == 200
+    except Exception:
+        return False
+
 def test_integration():
+    if not _server_available():
+        pytest.skip("Backend server not available on localhost:8000")
     email = "integration_test@example.com"
     password = "password123"
 
     # 1. Register
     print_step("1. Authentication")
     print(f"Registering {email}...")
-    r = SESSION.post(f"{BASE_URL}/register", json={"email": email, "password": password})
+    r = SESSION.post(f"{BASE_URL}/register", json={"email": email, "password": password}, timeout=5)
     if r.status_code == 200:
         print("Registration successful.")
     elif r.status_code == 400 and "already registered" in r.text:
@@ -28,7 +38,7 @@ def test_integration():
     # 2. Login
     print(f"Logging in...")
     # OAuth2 expects form data
-    r = SESSION.post(f"{BASE_URL}/token", data={"username": email, "password": password})
+    r = SESSION.post(f"{BASE_URL}/token", data={"username": email, "password": password}, timeout=5)
     if r.status_code == 200:
         token = r.json()["access_token"]
         print("Login successful. Token received.")
@@ -39,7 +49,7 @@ def test_integration():
 
     # 2.5 Get Me
     print("Fetching User Info...")
-    r = SESSION.get(f"{BASE_URL}/users/me", headers=headers)
+    r = SESSION.get(f"{BASE_URL}/users/me", headers=headers, timeout=5)
     if r.status_code == 200:
         print(f"User Info: {r.json()}")
     else:
@@ -48,7 +58,7 @@ def test_integration():
     # 3. Dashboard Stats
     print_step("2. Dashboard")
     print("Fetching Dashboard Stats...")
-    r = SESSION.get(f"{BASE_URL}/dashboard/stats", headers=headers)
+    r = SESSION.get(f"{BASE_URL}/dashboard/stats", headers=headers, timeout=5)
     if r.status_code == 200:
         stats = r.json()
         print(f"Stats: {stats}")
@@ -59,7 +69,7 @@ def test_integration():
 
     # 4. Alerts (Dashboard)
     print("Fetching Alerts...")
-    r = SESSION.get(f"{BASE_URL}/dashboard/alerts", headers=headers)
+    r = SESSION.get(f"{BASE_URL}/dashboard/alerts", headers=headers, timeout=5)
     if r.status_code == 200:
         alerts = r.json()
         print(f"Alerts count: {len(alerts)}")
@@ -69,7 +79,7 @@ def test_integration():
     # 5. Whale Radar
     print_step("3. Whale Radar")
     print("Fetching Whale Activity...")
-    r = SESSION.get(f"{BASE_URL}/dashboard/whales", headers=headers)
+    r = SESSION.get(f"{BASE_URL}/dashboard/whales", headers=headers, timeout=5)
     if r.status_code == 200:
         whales = r.json()
         print(f"Whale activities: {len(whales)}")
@@ -81,7 +91,7 @@ def test_integration():
     # 6. Leaderboard
     print_step("4. Leaderboard")
     print("Fetching Leaderboard...")
-    r = SESSION.get(f"{BASE_URL}/dashboard/leaderboard", headers=headers)
+    r = SESSION.get(f"{BASE_URL}/dashboard/leaderboard", headers=headers, timeout=5)
     if r.status_code == 200:
         leaders = r.json()
         print(f"Leaderboard items: {len(leaders)}")

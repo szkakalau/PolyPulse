@@ -1,7 +1,7 @@
 import os
 import tempfile
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import pytest
 from fastapi.testclient import TestClient
 import app.database as app_db
@@ -172,6 +172,48 @@ def test_signal_stats_endpoint():
     assert "evidence7d" in data
 
 @pytest.mark.unit
+def test_signal_credibility_endpoint():
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    evidence = {
+        "sourceType": "whale_trade",
+        "triggeredAt": (now - timedelta(seconds=12)).strftime("%Y-%m-%d %H:%M:%S"),
+        "marketId": "m1",
+        "makerAddress": "0xabc",
+        "evidenceUrl": "https://example.com",
+        "dedupeKey": "k1"
+    }
+    signal_id = app_db.create_signal("t", "c", "free", json.dumps(evidence))
+    app_db.upsert_signal_evaluation(signal_id=signal_id, is_hit=True, lead_seconds=180)
+    r = client.get("/insights/credibility")
+    assert r.status_code == 200
+    payload = r.json()
+    assert "window7d" in payload
+    assert "window30d" in payload
+    assert "signalsTotal" in payload["window7d"]
+    assert "latencyHistogram" in payload["window7d"]
+    assert "leadHistogram" in payload["window7d"]
+    assert "leadCount" in payload["window7d"]
+
+@pytest.mark.unit
+def test_delivery_observability_endpoint():
+    signal_id = app_db.create_signal("t", "c", "free")
+    app_db.create_notification_attempt(
+        user_id=1,
+        signal_id=signal_id,
+        mode="direct",
+        status="sent",
+        delay_seconds=0,
+        deliver_at="2025-01-01 00:00:00"
+    )
+    app_db.save_analytics_event(1, "push_open", json.dumps({"signalId": str(signal_id)}))
+    r = client.get("/insights/delivery")
+    assert r.status_code == 200
+    payload = r.json()
+    assert "window1d" in payload
+    assert "window7d" in payload
+    assert "successRate" in payload["window7d"]
+
+@pytest.mark.unit
 def test_dashboard_stats():
     r = client.get("/dashboard/stats")
     assert r.status_code == 200
@@ -220,7 +262,7 @@ def test_api_whales_uses_session_rows():
         def __init__(self):
             self.trade_id = "t1"
             self.value = 1234.0
-            self.timestamp = datetime.utcnow()
+            self.timestamp = datetime.now(timezone.utc).replace(tzinfo=None)
             self.address = "0xabc"
 
     class _FakeTrade:
@@ -270,7 +312,7 @@ def test_api_trades_uses_session_rows():
             self.price = 0.6
             self.size = 10
             self.value = 6.0
-            self.timestamp = datetime.utcnow()
+            self.timestamp = datetime.now(timezone.utc).replace(tzinfo=None)
             self.market = "m2"
 
     class _FakeSession:
@@ -378,7 +420,7 @@ def test_referral_code_and_redeem():
 
 @pytest.mark.unit
 def test_billing_status_expired_when_end_at_past():
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     start_at = (now - timedelta(days=10)).isoformat()
     end_at = (now - timedelta(days=1)).isoformat()
     app_db.upsert_subscription(

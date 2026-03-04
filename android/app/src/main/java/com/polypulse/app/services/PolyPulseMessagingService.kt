@@ -14,9 +14,12 @@ import com.google.firebase.messaging.RemoteMessage
 import com.polypulse.app.MainActivity
 import com.polypulse.app.R
 import com.polypulse.app.data.auth.TokenManager
+import com.polypulse.app.data.notifications.NotificationPreferencesStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import java.util.Calendar
 
 class PolyPulseMessagingService : FirebaseMessagingService() {
 
@@ -43,7 +46,13 @@ class PolyPulseMessagingService : FirebaseMessagingService() {
         remoteMessage.notification?.let {
             Log.d(TAG, "Message Notification Body: ${it.body}")
             val signalId = remoteMessage.data["signalId"]
-            sendNotification(it.title, it.body, signalId)
+            val template = resolveTemplate(remoteMessage)
+            val prefs = runBlocking {
+                NotificationPreferencesStore(applicationContext).getSnapshot()
+            }
+            if (isTemplateEnabled(template, prefs) && !shouldSuppressNotification(prefs) && !shouldThrottlePush(template)) {
+                sendNotification(it.title, it.body, signalId)
+            }
         }
     }
 
@@ -89,5 +98,45 @@ class PolyPulseMessagingService : FirebaseMessagingService() {
 
     companion object {
         private const val TAG = "PolyPulseMsgService"
+    }
+
+    private fun shouldSuppressNotification(prefs: com.polypulse.app.data.notifications.NotificationPreferences): Boolean {
+        if (!prefs.quietHoursEnabled) return false
+        val hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
+        return if (prefs.quietHoursStart < prefs.quietHoursEnd) {
+            hour in prefs.quietHoursStart until prefs.quietHoursEnd
+        } else {
+            hour >= prefs.quietHoursStart || hour < prefs.quietHoursEnd
+        }
+    }
+
+    private fun shouldThrottlePush(template: String): Boolean {
+        return runBlocking {
+            val store = NotificationPreferencesStore(applicationContext)
+            val config = store.getThrottleConfig()
+            val intervalMs = when (template) {
+                "whale" -> config.whalePushIntervalMinutes * 60000L
+                "daily_pulse" -> config.dailyPushIntervalMinutes * 60000L
+                else -> config.generalPushIntervalMinutes * 60000L
+            }
+            store.shouldThrottlePushTemplate(template, intervalMs)
+        }
+    }
+
+    private fun resolveTemplate(remoteMessage: RemoteMessage): String {
+        val raw = remoteMessage.data["template"] ?: remoteMessage.data["type"] ?: "general"
+        return when (raw.lowercase()) {
+            "whale", "whale_radar" -> "whale"
+            "daily", "daily_pulse" -> "daily_pulse"
+            else -> "general"
+        }
+    }
+
+    private fun isTemplateEnabled(template: String, prefs: com.polypulse.app.data.notifications.NotificationPreferences): Boolean {
+        return when (template) {
+            "whale" -> prefs.whaleRadarEnabled
+            "daily_pulse" -> prefs.dailyPulseEnabled
+            else -> true
+        }
     }
 }

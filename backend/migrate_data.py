@@ -4,6 +4,7 @@ import psycopg2.extras
 import os
 import sys
 import logging
+import re
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -73,13 +74,14 @@ def migrate_data():
         for table in tables:
             logger.info(f"Migrating table: {table}...")
             
-            # 1. Check if table exists in SQLite
-            sqlite_cursor.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table}'")
+            if not re.match(r"^[A-Za-z0-9_]+$", table):
+                logger.warning(f"Skipping unsafe table name: {table}")
+                continue
+            sqlite_cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,))
             if not sqlite_cursor.fetchone():
                 logger.warning(f"Table {table} does not exist in SQLite. Skipping.")
                 continue
 
-            # 2. Get data from SQLite
             sqlite_cursor.execute(f"SELECT * FROM {table}")
             rows = sqlite_cursor.fetchall()
             

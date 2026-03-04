@@ -13,16 +13,22 @@ import androidx.compose.material.icons.filled.TrendingDown
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.polypulse.app.R
 import com.polypulse.app.data.remote.dto.TopMover
 import com.polypulse.app.data.remote.dto.SmartWalletDto
 import com.polypulse.app.data.remote.dto.WhaleActivityDto
+import kotlinx.coroutines.delay
 import java.text.NumberFormat
 import java.util.Locale
 
@@ -31,17 +37,29 @@ import java.util.Locale
 fun DashboardScreen(
     viewModel: DashboardViewModel,
     onNavigateToLeaderboard: () -> Unit,
-    onNavigateToLogin: () -> Unit
+    onNavigateToLogin: () -> Unit,
+    onNavigateToPreferences: () -> Unit,
+    onNavigateToSignals: () -> Unit,
+    onNavigateToFilterRules: () -> Unit
 ) {
     val state by viewModel.state
+    val restoredMessage = remember { mutableStateOf(false) }
+
+    LaunchedEffect(state.filterRestoredJustNow) {
+        if (state.filterRestoredJustNow) {
+            restoredMessage.value = true
+            delay(2000)
+            restoredMessage.value = false
+        }
+    }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Dashboard") },
+                title = { Text(stringResource(R.string.dashboard_title)) },
                 actions = {
                     IconButton(onClick = { viewModel.loadData() }) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Refresh")
+                        Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.dashboard_refresh_content_desc))
                     }
                 }
             )
@@ -62,7 +80,7 @@ fun DashboardScreen(
                     if (state.error == "Please login") {
                         Spacer(modifier = Modifier.height(12.dp))
                         Button(onClick = onNavigateToLogin) {
-                            Text("Login")
+                            Text(stringResource(R.string.dashboard_action_login))
                         }
                     }
                 }
@@ -74,7 +92,7 @@ fun DashboardScreen(
                     if (state.stats != null) {
                         item {
                             Text(
-                                text = "Overview",
+                                text = stringResource(R.string.dashboard_overview_title),
                                 style = MaterialTheme.typography.titleLarge,
                                 fontWeight = FontWeight.Bold
                             )
@@ -86,13 +104,13 @@ fun DashboardScreen(
                                 horizontalArrangement = Arrangement.spacedBy(16.dp)
                             ) {
                                 StatCard(
-                                    title = "Alerts (24h)",
+                                    title = stringResource(R.string.dashboard_alerts_24h),
                                     value = state.stats!!.alerts_24h.toString(),
                                     modifier = Modifier.weight(1f),
                                     color = MaterialTheme.colorScheme.primaryContainer
                                 )
                                 StatCard(
-                                    title = "Watchlist",
+                                    title = stringResource(R.string.dashboard_watchlist),
                                     value = state.stats!!.watchlist_count.toString(),
                                     modifier = Modifier.weight(1f),
                                     color = MaterialTheme.colorScheme.secondaryContainer
@@ -107,11 +125,116 @@ fun DashboardScreen(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    text = "Login to see personal stats",
+                                    text = stringResource(R.string.dashboard_login_stats),
                                     style = MaterialTheme.typography.bodyMedium
                                 )
                                 Button(onClick = onNavigateToLogin) {
-                                    Text("Login")
+                                    Text(stringResource(R.string.dashboard_action_login))
+                                }
+                            }
+                        }
+                    }
+
+                    if (state.preferredCategories.isNotEmpty()) {
+                        item {
+                            Card(
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(12.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    val total = state.whaleActivity.size
+                                    val filtered = state.filteredWhaleActivity.size
+                                    val label = if (state.temporaryFilterDisabled) {
+                                        val countdown = if (state.filterRestorePaused) {
+                                            stringResource(R.string.dashboard_filter_paused, state.filterRestoreSeconds)
+                                        } else if (state.filterRestoreSeconds > 0) {
+                                            stringResource(R.string.dashboard_filter_restores_in, state.filterRestoreSeconds)
+                                        } else {
+                                            stringResource(R.string.dashboard_filter_tap_on)
+                                        }
+                                        stringResource(R.string.dashboard_filter_off_session, total, countdown)
+                                    } else {
+                                        val preview = if (state.showAllPreferences) {
+                                            state.preferredCategories.joinToString()
+                                        } else {
+                                            state.preferredCategories.joinToString(limit = 2, truncated = "…")
+                                        }
+                                        stringResource(R.string.dashboard_filter_filtered_by, preview, filtered, total)
+                                    }
+                                    Column {
+                                        Text(
+                                            text = label,
+                                            style = MaterialTheme.typography.bodyMedium
+                                        )
+                                        if (restoredMessage.value) {
+                                            Text(
+                                                text = stringResource(R.string.dashboard_filter_restored),
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.primary
+                                            )
+                                        }
+                                    }
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        TextButton(onClick = { viewModel.loadData() }) {
+                                            Text(stringResource(R.string.dashboard_action_refresh))
+                                        }
+                                        TextButton(onClick = { viewModel.clearPreferences() }) {
+                                            Text(stringResource(R.string.dashboard_action_clear))
+                                        }
+                                        if (state.temporaryFilterDisabled) {
+                                            TextButton(onClick = { viewModel.enableFilter() }) {
+                                                Text(stringResource(R.string.dashboard_action_on))
+                                            }
+                                        } else {
+                                            TextButton(onClick = { viewModel.disableFilterOnce() }) {
+                                                Text(stringResource(R.string.dashboard_action_off))
+                                            }
+                                        }
+                                        if (state.temporaryFilterDisabled) {
+                                            TextButton(onClick = onNavigateToFilterRules) {
+                                                Text(stringResource(R.string.dashboard_action_rules))
+                                            }
+                                            if (state.filterRestoreSeconds > 0) {
+                                                TextButton(onClick = {
+                                                    if (state.filterRestorePaused) {
+                                                        viewModel.resumeFilterRestore()
+                                                    } else {
+                                                        viewModel.pauseFilterRestore()
+                                                    }
+                                                }) {
+                                                    Text(
+                                                        if (state.filterRestorePaused) {
+                                                            stringResource(R.string.dashboard_action_resume_timer)
+                                                        } else {
+                                                            stringResource(R.string.dashboard_action_pause_timer)
+                                                        }
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        if (!state.temporaryFilterDisabled && state.preferredCategories.size > 2) {
+                                            TextButton(onClick = { viewModel.togglePreferencesExpanded() }) {
+                                                Text(
+                                                    if (state.showAllPreferences) {
+                                                        stringResource(R.string.dashboard_action_less)
+                                                    } else {
+                                                        stringResource(R.string.dashboard_action_more)
+                                                    }
+                                                )
+                                            }
+                                        }
+                                        TextButton(onClick = onNavigateToPreferences) {
+                                            Text(stringResource(R.string.dashboard_action_manage))
+                                        }
+                                        TextButton(onClick = onNavigateToSignals) {
+                                            Text(stringResource(R.string.dashboard_action_signals))
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -125,7 +248,7 @@ fun DashboardScreen(
                                 containerColor = MaterialTheme.colorScheme.tertiary
                             )
                         ) {
-                            Text("View Smart Money Leaderboard")
+                            Text(stringResource(R.string.dashboard_action_view_leaderboard))
                         }
                     }
 
@@ -136,28 +259,34 @@ fun DashboardScreen(
                         ) {
                              Icon(
                                 Icons.Default.Warning,
-                                contentDescription = "Whale",
+                                contentDescription = stringResource(R.string.dashboard_whale_icon_desc),
                                 tint = MaterialTheme.colorScheme.primary
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = "Whale Radar (>$1k)",
+                                text = stringResource(R.string.dashboard_whale_radar_title),
                                 style = MaterialTheme.typography.titleLarge,
                                 fontWeight = FontWeight.Bold
                             )
                         }
                     }
                     
-                    if (state.whaleActivity.isEmpty()) {
+                    val visibleWhales = if (state.preferredCategories.isNotEmpty() && !state.temporaryFilterDisabled) {
+                        state.filteredWhaleActivity
+                    } else {
+                        state.whaleActivity
+                    }
+
+                    if (visibleWhales.isEmpty()) {
                         item {
                             Text(
-                                text = "No recent large trades detected.",
+                                text = stringResource(R.string.dashboard_no_large_trades),
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     } else {
-                        items(state.whaleActivity) { whale ->
+                        items(visibleWhales) { whale ->
                             WhaleActivityItem(whale)
                         }
                     }
@@ -165,7 +294,7 @@ fun DashboardScreen(
                     if (state.stats != null) {
                         item {
                             Text(
-                                text = "Top Movers (24h)",
+                                text = stringResource(R.string.dashboard_top_movers_title),
                                 style = MaterialTheme.typography.titleLarge,
                                 fontWeight = FontWeight.Bold,
                                 modifier = Modifier.padding(top = 16.dp)
@@ -210,7 +339,7 @@ fun WhaleActivityItem(whale: WhaleActivityDto) {
                     )
                     Spacer(modifier = Modifier.width(4.dp))
                     Text(
-                        text = if (isBuy) "Whale BUY" else "Whale SELL",
+                        text = if (isBuy) stringResource(R.string.whale_buy_label) else stringResource(R.string.whale_sell_label),
                         style = MaterialTheme.typography.labelLarge,
                         color = color,
                         fontWeight = FontWeight.Bold
@@ -313,22 +442,132 @@ fun TopMoverItem(mover: TopMover) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun WhaleListScreen(
-    viewModel: WhaleListViewModel
+    viewModel: WhaleListViewModel,
+    onNavigateToPreferences: () -> Unit,
+    onNavigateToSignals: () -> Unit,
+    onNavigateToFilterRules: () -> Unit
 ) {
     val state by viewModel.state
+    val restoredMessage = remember { mutableStateOf(false) }
+
+    LaunchedEffect(state.filterRestoredJustNow) {
+        if (state.filterRestoredJustNow) {
+            restoredMessage.value = true
+            delay(2000)
+            restoredMessage.value = false
+        }
+    }
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Whales") },
+                title = { Text(stringResource(R.string.whales_title)) },
                 actions = {
                     IconButton(onClick = { viewModel.loadWhales() }) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Refresh")
+                        Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.dashboard_refresh_content_desc))
                     }
                 }
             )
         }
     ) { padding ->
         Box(modifier = Modifier.padding(padding).fillMaxSize()) {
+            if (state.preferredCategories.isNotEmpty()) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            val total = state.whales.size
+                            val filtered = state.filteredWhales.size
+                            val label = if (state.temporaryFilterDisabled) {
+                                val countdown = if (state.filterRestorePaused) {
+                                    "Paused at ${state.filterRestoreSeconds}s"
+                                } else if (state.filterRestoreSeconds > 0) {
+                                    "Restores in ${state.filterRestoreSeconds}s"
+                                } else {
+                                    "Tap On to restore"
+                                }
+                                "Filter off this session · $total items · $countdown"
+                            } else {
+                                val preview = if (state.showAllPreferences) {
+                                    state.preferredCategories.joinToString()
+                                } else {
+                                    state.preferredCategories.joinToString(limit = 2, truncated = "…")
+                                }
+                                "Filtered by: $preview ($filtered/$total)"
+                            }
+                            Column {
+                                Text(
+                                    text = label,
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                                if (restoredMessage.value) {
+                                    Text(
+                                        text = "Filter restored (this time)",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                TextButton(onClick = { viewModel.loadWhales() }) {
+                                    Text(stringResource(R.string.dashboard_action_refresh))
+                                }
+                                TextButton(onClick = { viewModel.clearPreferences() }) {
+                                    Text(stringResource(R.string.dashboard_action_clear))
+                                }
+                                if (state.temporaryFilterDisabled) {
+                                    TextButton(onClick = { viewModel.enableFilter() }) {
+                                        Text(stringResource(R.string.dashboard_action_on))
+                                    }
+                                } else {
+                                    TextButton(onClick = { viewModel.disableFilterOnce() }) {
+                                        Text(stringResource(R.string.dashboard_action_off))
+                                    }
+                                }
+                                if (state.temporaryFilterDisabled) {
+                                    TextButton(onClick = onNavigateToFilterRules) {
+                                        Text(stringResource(R.string.dashboard_action_rules))
+                                    }
+                                    if (state.filterRestoreSeconds > 0) {
+                                        TextButton(onClick = {
+                                            if (state.filterRestorePaused) {
+                                                viewModel.resumeFilterRestore()
+                                            } else {
+                                                viewModel.pauseFilterRestore()
+                                            }
+                                        }) {
+                                                    Text(if (state.filterRestorePaused) "Resume timer" else "Pause timer")
+                                        }
+                                    }
+                                }
+                                if (!state.temporaryFilterDisabled && state.preferredCategories.size > 2) {
+                                    TextButton(onClick = { viewModel.togglePreferencesExpanded() }) {
+                                        Text(if (state.showAllPreferences) "Less" else "More")
+                                    }
+                                }
+                                TextButton(onClick = onNavigateToPreferences) {
+                                    Text(stringResource(R.string.dashboard_action_manage))
+                                }
+                                TextButton(onClick = onNavigateToSignals) {
+                                    Text(stringResource(R.string.dashboard_action_signals))
+                                }
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(12.dp))
+                }
+            }
+            val visibleWhales = if (state.preferredCategories.isNotEmpty() && !state.temporaryFilterDisabled) {
+                state.filteredWhales
+            } else {
+                state.whales
+            }
             when {
                 state.isLoading -> {
                     CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
@@ -340,7 +579,7 @@ fun WhaleListScreen(
                         modifier = Modifier.align(Alignment.Center)
                     )
                 }
-                state.whales.isEmpty() -> {
+                visibleWhales.isEmpty() -> {
                     Text(
                         text = "No whale trades yet.",
                         modifier = Modifier.align(Alignment.Center)
@@ -351,7 +590,7 @@ fun WhaleListScreen(
                         contentPadding = PaddingValues(16.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        items(state.whales) { whale ->
+                        items(visibleWhales) { whale ->
                             WhaleActivityItem(whale)
                         }
                     }
@@ -370,7 +609,7 @@ fun SmartMoneyScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Smart Money") },
+                title = { Text(stringResource(R.string.smart_money_title)) },
                 actions = {
                     IconButton(onClick = { viewModel.loadSmartMoney() }) {
                         Icon(Icons.Default.Refresh, contentDescription = "Refresh")
@@ -392,16 +631,33 @@ fun SmartMoneyScreen(
                     )
                 }
                 state.wallets.isEmpty() -> {
-                    Text(
-                        text = "No smart wallets yet.",
-                        modifier = Modifier.align(Alignment.Center)
-                    )
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .padding(16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(text = "No smart wallets yet.")
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "Smart Money isn’t filtered by preferences yet.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
                 else -> {
                     LazyColumn(
                         contentPadding = PaddingValues(16.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
+                        item {
+                            Text(
+                                text = "Smart Money isn’t filtered by preferences yet.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                         items(state.wallets) { wallet ->
                             SmartMoneyItem(wallet)
                         }

@@ -9,6 +9,7 @@ import com.polypulse.app.data.remote.dto.BillingStatusResponseDto
 import com.polypulse.app.data.remote.dto.EntitlementsResponseDto
 import com.polypulse.app.data.remote.dto.PaywallPlanDto
 import com.polypulse.app.data.remote.dto.SignalStatsDto
+import com.polypulse.app.data.remote.dto.SignalCredibilityResponse
 import com.polypulse.app.data.repository.PaywallRepository
 import kotlinx.coroutines.launch
 
@@ -19,7 +20,8 @@ data class PaywallState(
     val trialResult: String? = null,
     val entitlements: EntitlementsResponseDto? = null,
     val billingStatus: BillingStatusResponseDto? = null,
-    val signalStats: SignalStatsDto? = null
+    val signalStats: SignalStatsDto? = null,
+    val credibility: SignalCredibilityResponse? = null
 )
 
 class PaywallViewModel(private val repository: PaywallRepository) : ViewModel() {
@@ -29,6 +31,7 @@ class PaywallViewModel(private val repository: PaywallRepository) : ViewModel() 
     init {
         loadPaywall()
         loadSignalStats()
+        loadCredibility()
     }
 
     fun loadPaywall() {
@@ -53,6 +56,15 @@ class PaywallViewModel(private val repository: PaywallRepository) : ViewModel() 
         }
     }
 
+    fun loadCredibility() {
+        viewModelScope.launch {
+            repository.getSignalCredibility()
+                .onSuccess { data ->
+                    _state.value = _state.value.copy(credibility = data)
+                }
+        }
+    }
+
     fun refreshEntitlements() {
         viewModelScope.launch {
             repository.getEntitlementsMe()
@@ -67,6 +79,23 @@ class PaywallViewModel(private val repository: PaywallRepository) : ViewModel() 
             repository.getBillingStatus()
                 .onSuccess { status ->
                     _state.value = _state.value.copy(billingStatus = status)
+                }
+        }
+    }
+
+    fun restorePurchases(onSuccess: (BillingStatusResponseDto) -> Unit, onFailure: (String) -> Unit) {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(isLoading = true, error = null)
+            repository.getBillingStatus()
+                .onSuccess { status ->
+                    _state.value = _state.value.copy(isLoading = false, billingStatus = status)
+                    refreshEntitlements()
+                    onSuccess(status)
+                }
+                .onFailure { e ->
+                    val errorMessage = e.message ?: "Failed to restore"
+                    _state.value = _state.value.copy(isLoading = false, error = errorMessage)
+                    onFailure(errorMessage)
                 }
         }
     }

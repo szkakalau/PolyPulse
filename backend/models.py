@@ -1,7 +1,10 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import Column, String, Integer, Float, DateTime, ForeignKey, Text
 from sqlalchemy.orm import relationship
 from database import Base
+
+def _utcnow():
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class Market(Base):
@@ -11,7 +14,7 @@ class Market(Base):
     question = Column(Text, nullable=False)
     volume = Column(Float, nullable=True)
     liquidity = Column(Float, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
 
 class Trade(Base):
@@ -26,7 +29,7 @@ class Trade(Base):
     size = Column(Float, nullable=False)
     value = Column(Float, nullable=False)
     timestamp = Column(DateTime, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
 
 class Whale(Base):
@@ -37,7 +40,7 @@ class Whale(Base):
     address = Column(String, nullable=False)
     value = Column(Float, nullable=False)
     timestamp = Column(DateTime, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=_utcnow)
 
     trade = relationship("Trade")
 
@@ -51,4 +54,4 @@ class SmartWallet(Base):
     roi = Column(Float, nullable=False)
     win_rate = Column(Float, nullable=False)
     total_trades = Column(Integer, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=_utcnow)

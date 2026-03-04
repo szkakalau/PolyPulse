@@ -7,6 +7,7 @@ import com.polypulse.app.data.remote.dto.PaywallResponseDto
 import com.polypulse.app.data.remote.dto.RegisterRequest
 import com.polypulse.app.data.remote.dto.SignalDto
 import com.polypulse.app.data.remote.dto.SignalStatsDto
+import com.polypulse.app.data.remote.dto.SignalCredibilityResponse
 import com.polypulse.app.data.remote.dto.SmartWalletDto
 import com.polypulse.app.data.remote.dto.TrialStartResponseDto
 import com.polypulse.app.data.remote.dto.EntitlementsResponseDto
@@ -115,6 +116,9 @@ interface BackendApi {
 
     @GET("signals/stats")
     suspend fun getSignalStats(): SignalStatsDto
+
+    @GET("insights/credibility")
+    suspend fun getSignalCredibility(): SignalCredibilityResponse
 
     @GET("paywall")
     suspend fun getPaywall(): PaywallResponseDto

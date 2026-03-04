@@ -26,12 +26,16 @@ import com.polypulse.app.data.repository.DashboardRepository
 import com.polypulse.app.data.repository.AnalyticsRepository
 import com.polypulse.app.data.repository.InAppMessageRepository
 import com.polypulse.app.data.inapp.InAppMessageStore
+import com.polypulse.app.data.onboarding.OnboardingStore
+import com.polypulse.app.data.onboarding.OnboardingPreferencesStore
+import com.polypulse.app.data.notifications.NotificationPreferencesStore
 
 object AppModule {
     private const val BASE_URL = "https://clob.polymarket.com/"
     private val backendBaseUrls = listOf(
-        "https://backend-production-1981.up.railway.app/",
-        "http://10.0.2.2:8000/"
+        "http://10.0.2.2:8000/",
+        "http://192.168.2.123:8000/", // Added for physical device testing
+        "https://backend-production-1981.up.railway.app/"
     )
 
     private val json = Json {
@@ -119,6 +123,15 @@ object AppModule {
     @Volatile
     private var inAppMessageStore: InAppMessageStore? = null
 
+    @Volatile
+    private var onboardingStore: OnboardingStore? = null
+
+    @Volatile
+    private var onboardingPreferencesStore: OnboardingPreferencesStore? = null
+
+    @Volatile
+    private var notificationPreferencesStore: NotificationPreferencesStore? = null
+
     fun provideAuthRepository(context: Context): AuthRepository {
         return authRepository ?: synchronized(this) {
             val tokenManager = TokenManager(context)
@@ -195,6 +208,30 @@ object AppModule {
         return inAppMessageStore ?: synchronized(this) {
             val store = InAppMessageStore(context)
             inAppMessageStore = store
+            store
+        }
+    }
+
+    fun provideOnboardingStore(context: Context): OnboardingStore {
+        return onboardingStore ?: synchronized(this) {
+            val store = OnboardingStore(context)
+            onboardingStore = store
+            store
+        }
+    }
+
+    fun provideOnboardingPreferencesStore(context: Context): OnboardingPreferencesStore {
+        return onboardingPreferencesStore ?: synchronized(this) {
+            val store = OnboardingPreferencesStore(context)
+            onboardingPreferencesStore = store
+            store
+        }
+    }
+
+    fun provideNotificationPreferencesStore(context: Context): NotificationPreferencesStore {
+        return notificationPreferencesStore ?: synchronized(this) {
+            val store = NotificationPreferencesStore(context)
+            notificationPreferencesStore = store
             store
         }
     }

@@ -13,10 +13,12 @@ vi.mock("../api", () => ({
   ])
 }))
 
-test("renders smart header and one row", async () => {
+test("renders smart table and one row", async () => {
   render(<Smart />)
-  expect(screen.getByText("Smart Money")).toBeInTheDocument()
+  // Header removed, check table column
+  expect(screen.getByText("Profit")).toBeInTheDocument()
   await waitFor(() => {
-    expect(screen.getByText("0xsmart")).toBeInTheDocument()
+    // Address might be truncated, check by title attribute which contains full address
+    expect(screen.getByTitle("0xsmart")).toBeInTheDocument()
   })
 })

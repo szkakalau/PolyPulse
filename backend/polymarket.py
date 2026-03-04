@@ -1,7 +1,7 @@
 import os
 import requests
 from typing import Dict, List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from database import get_session
 from models import Market as DbMarket, Trade as DbTrade
 
@@ -22,7 +22,7 @@ MOCK_MARKETS = [
         "bestAsk": 0.63,
         "bestBid": 0.61,
         "volume24hr": 12000,
-        "updatedAt": datetime.utcnow().isoformat()
+        "updatedAt": datetime.now(timezone.utc).isoformat()
     },
     {
         "id": "mock-market-2",
@@ -37,7 +37,7 @@ MOCK_MARKETS = [
         "bestAsk": 0.42,
         "bestBid": 0.40,
         "volume24hr": 8000,
-        "updatedAt": datetime.utcnow().isoformat()
+        "updatedAt": datetime.now(timezone.utc).isoformat()
     }
 ]
 
@@ -136,7 +136,7 @@ def _mock_markets(limit: int) -> List[Dict]:
 
 
 def _mock_trades(limit: int, market_id: str, token_id: Optional[str] = None) -> List[Dict]:
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     base_price = 0.6 if token_id and token_id.endswith("yes") else 0.4
     trades = []
     for idx in range(min(limit, 5)):

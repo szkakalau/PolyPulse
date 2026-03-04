@@ -131,6 +131,61 @@ class SignalStatsResponse(BaseModel):
     signals7d: int
     evidence7d: int
 
+class SignalCredibilityHistogramItem(BaseModel):
+    bucket: str
+    count: int
+
+class SignalCredibilityWindowResponse(BaseModel):
+    windowDays: int
+    signalsTotal: int
+    signalsWithEvidence: int
+    evidenceRate: float
+    evaluatedTotal: int
+    hitTotal: int
+    hitRate: float
+    hitRateCiLow: float
+    hitRateCiHigh: float
+    latencyCount: int
+    latencyP50Seconds: Optional[int] = None
+    latencyP90Seconds: Optional[int] = None
+    latencyHistogram: List[SignalCredibilityHistogramItem]
+    leadCount: int
+    leadP50Seconds: Optional[int] = None
+    leadP90Seconds: Optional[int] = None
+    leadHistogram: List[SignalCredibilityHistogramItem]
+
+class SignalCredibilityResponse(BaseModel):
+    window7d: SignalCredibilityWindowResponse
+    window30d: SignalCredibilityWindowResponse
+
+class AdminSignalEvaluationRequest(BaseModel):
+    isHit: bool
+    leadSeconds: Optional[int] = None
+    evaluatedAt: Optional[str] = None
+
+class DeliveryWindowResponse(BaseModel):
+    windowDays: int
+    attemptsTotal: int
+    queued: int
+    delayed: int
+    sent: int
+    failed: int
+    noTokens: int
+    disabled: int
+    successRate: float
+    pushOpenCount: int
+    clickThroughRate: float
+    queueDelayP50Seconds: Optional[int] = None
+    queueDelayP90Seconds: Optional[int] = None
+    dispatchDelayP50Seconds: Optional[int] = None
+    dispatchDelayP90Seconds: Optional[int] = None
+
+class DeliveryObservabilityResponse(BaseModel):
+    window1d: DeliveryWindowResponse
+    window7d: DeliveryWindowResponse
+    redisQueueDepth: Optional[int] = None
+    redisOldestDueSeconds: Optional[int] = None
+
 class ReferralCodeResponse(BaseModel):
     code: str
 

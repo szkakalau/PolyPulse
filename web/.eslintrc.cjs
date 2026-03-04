@@ -4,6 +4,11 @@ module.exports = {
     browser: true,
     es2021: true
   },
+  globals: {
+    test: "readonly",
+    expect: "readonly",
+    vi: "readonly"
+  },
   parserOptions: {
     ecmaVersion: "latest",
     sourceType: "module",
@@ -19,6 +24,7 @@ module.exports = {
     }
   },
   rules: {
-    "react/react-in-jsx-scope": "off"
+    "react/react-in-jsx-scope": "off",
+    "react/prop-types": "off"
   }
 };

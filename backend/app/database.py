@@ -3,11 +3,16 @@ import logging
 from typing import List, Dict, Optional, Any
 import os
 import json
-from datetime import datetime, timedelta
+import time
+import math
+from datetime import datetime, timedelta, timezone
+from queue import Queue, Empty
+from threading import Lock
 
 try:
     import psycopg2
     import psycopg2.extras
+    import psycopg2.pool
 except ImportError:
     psycopg2 = None
 
@@ -19,18 +24,90 @@ if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
 IS_POSTGRES = bool(DATABASE_URL) and (psycopg2 is not None)
+DB_POOL_MAX = int(os.environ.get("DB_POOL_MAX", "5"))
+_pg_pool = None
+_sqlite_pool = None
+_pool_lock = Lock()
 
-def get_db_connection():
-    if IS_POSTGRES:
-        return psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
-    conn = sqlite3.connect(DB_PATH)
+class PooledConnection:
+    def __init__(self, conn, releaser):
+        self._conn = conn
+        self._releaser = releaser
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    def close(self):
+        self._releaser(self._conn)
+
+def _get_pg_pool():
+    global _pg_pool
+    if _pg_pool is None:
+        with _pool_lock:
+            if _pg_pool is None:
+                _pg_pool = psycopg2.pool.ThreadedConnectionPool(
+                    1,
+                    DB_POOL_MAX,
+                    DATABASE_URL,
+                    cursor_factory=psycopg2.extras.RealDictCursor
+                )
+    return _pg_pool
+
+def _get_sqlite_pool():
+    global _sqlite_pool
+    if _sqlite_pool is None:
+        with _pool_lock:
+            if _sqlite_pool is None:
+                _sqlite_pool = Queue(maxsize=DB_POOL_MAX)
+    return _sqlite_pool
+
+def _create_sqlite_connection():
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 
+def _release_sqlite_connection(conn):
+    pool = _get_sqlite_pool()
+    if pool.full():
+        conn.close()
+    else:
+        pool.put(conn)
+
+def get_db_connection():
+    if IS_POSTGRES:
+        pool = _get_pg_pool()
+        conn = pool.getconn()
+        return PooledConnection(conn, lambda c: pool.putconn(c))
+    pool = _get_sqlite_pool()
+    try:
+        conn = pool.get_nowait()
+    except Empty:
+        conn = _create_sqlite_connection()
+    return PooledConnection(conn, _release_sqlite_connection)
+
 def execute_sql(cursor, query: str, params: tuple = ()) -> None:
+    start = time.time()
+    qnorm = (query or "").strip().lower()
     if IS_POSTGRES:
         query = query.replace("?", "%s")
     cursor.execute(query, params)
+    try:
+        enable = os.environ.get("QUERY_METRICS_ENABLE", "1") == "1"
+        if not enable:
+            return
+        # Skip meta operations
+        if ("query_metrics" in qnorm) or qnorm.startswith(("create", "pragma")):
+            return
+        duration = time.time() - start
+        threshold_ms = float(os.environ.get("SLOW_QUERY_THRESHOLD_MS", "50"))
+        if duration * 1000 >= threshold_ms:
+            if IS_POSTGRES:
+                cursor.execute("INSERT INTO query_metrics (query, duration) VALUES (%s, %s)", (query, duration))
+            else:
+                cursor.execute("INSERT INTO query_metrics (query, duration) VALUES (?, ?)", (query, duration))
+    except Exception:
+        # Never break normal execution due to metrics logging
+        pass
 
 def init_db():
     try:
@@ -155,6 +232,16 @@ def init_db():
             )
         ''')
 
+        # Query Metrics
+        cursor.execute(f'''
+            CREATE TABLE IF NOT EXISTS query_metrics (
+                id {pk_type},
+                query TEXT NOT NULL,
+                duration REAL NOT NULL,
+                timestamp TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
         # User Entitlements
         cursor.execute(f'''
             CREATE TABLE IF NOT EXISTS user_entitlements (
@@ -194,6 +281,40 @@ def init_db():
                 tier_required TEXT NOT NULL DEFAULT 'free',
                 evidence_json TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+        cursor.execute(f'''
+            CREATE TABLE IF NOT EXISTS signal_evaluations (
+                id {pk_type},
+                signal_id INTEGER NOT NULL,
+                is_hit INTEGER NOT NULL,
+                lead_seconds INTEGER,
+                evaluated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(signal_id),
+                FOREIGN KEY(signal_id) REFERENCES signals(id)
+            )
+        ''')
+
+        cursor.execute(f'''
+            CREATE TABLE IF NOT EXISTS notification_attempts (
+                id {pk_type},
+                user_id INTEGER NOT NULL,
+                signal_id INTEGER NOT NULL,
+                mode TEXT NOT NULL,
+                delay_seconds INTEGER NOT NULL DEFAULT 0,
+                retry_count INTEGER NOT NULL DEFAULT 0,
+                queued_at TEXT,
+                deliver_at TEXT,
+                sent_at TEXT,
+                token_count INTEGER NOT NULL DEFAULT 0,
+                success_count INTEGER NOT NULL DEFAULT 0,
+                failure_count INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL,
+                error TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(user_id) REFERENCES users(id),
+                FOREIGN KEY(signal_id) REFERENCES signals(id)
             )
         ''')
 
@@ -304,7 +425,7 @@ def init_db():
             row = cursor.fetchone()
             existing_count = int(row["count"] or 0) if row else 0
             if existing_count == 0:
-                now = datetime.utcnow()
+                now = datetime.now(timezone.utc).replace(tzinfo=None)
                 evidence_items = [
                     {
                         "sourceType": "whale_trade",
@@ -706,6 +827,406 @@ def get_signal_by_id(signal_id: int) -> Optional[Dict]:
     conn.close()
     return dict(row) if row else None
 
+def upsert_signal_evaluation(
+    signal_id: int,
+    is_hit: bool,
+    lead_seconds: Optional[int] = None,
+    evaluated_at: Optional[str] = None
+) -> None:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    execute_sql(
+        cursor,
+        '''
+        INSERT INTO signal_evaluations (signal_id, is_hit, lead_seconds, evaluated_at)
+        VALUES (?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+        ON CONFLICT(signal_id) DO UPDATE SET
+            is_hit=excluded.is_hit,
+            lead_seconds=excluded.lead_seconds,
+            evaluated_at=excluded.evaluated_at
+        ''',
+        (signal_id, 1 if is_hit else 0, lead_seconds, evaluated_at)
+    )
+    conn.commit()
+    conn.close()
+
+def _parse_db_datetime(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f"):
+        try:
+            return datetime.strptime(value, fmt)
+        except Exception:
+            continue
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
+    except Exception:
+        return None
+
+def _wilson_ci(k: int, n: int, z: float = 1.96) -> Dict[str, float]:
+    if n <= 0:
+        return {"low": 0.0, "high": 0.0}
+    phat = k / n
+    denom = 1.0 + (z * z) / n
+    center = (phat + (z * z) / (2.0 * n)) / denom
+    margin = (z * math.sqrt((phat * (1.0 - phat) + (z * z) / (4.0 * n)) / n)) / denom
+    low = max(0.0, center - margin)
+    high = min(1.0, center + margin)
+    return {"low": low, "high": high}
+
+def _percentile(values: List[int], p: float) -> Optional[int]:
+    if not values:
+        return None
+    sorted_vals = sorted(values)
+    if p <= 0:
+        return sorted_vals[0]
+    if p >= 100:
+        return sorted_vals[-1]
+    k = (len(sorted_vals) - 1) * (p / 100.0)
+    f = int(math.floor(k))
+    c = int(math.ceil(k))
+    if f == c:
+        return sorted_vals[int(k)]
+    d0 = sorted_vals[f] * (c - k)
+    d1 = sorted_vals[c] * (k - f)
+    return int(round(d0 + d1))
+
+def get_signal_credibility(days: int) -> Dict[str, Any]:
+    since_ts = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    execute_sql(
+        cursor,
+        '''
+        SELECT id, evidence_json, created_at
+        FROM signals
+        WHERE created_at >= ?
+        ORDER BY created_at DESC
+        ''',
+        (since_ts,)
+    )
+    signals = [dict(row) for row in cursor.fetchall()]
+
+    execute_sql(
+        cursor,
+        '''
+        SELECT
+            COUNT(*) as evaluated_count,
+            SUM(CASE WHEN is_hit = 1 THEN 1 ELSE 0 END) as hit_count
+        FROM signal_evaluations se
+        JOIN signals s ON s.id = se.signal_id
+        WHERE s.created_at >= ?
+        ''',
+        (since_ts,)
+    )
+    eval_row = cursor.fetchone()
+
+    execute_sql(
+        cursor,
+        '''
+        SELECT se.lead_seconds as lead_seconds
+        FROM signal_evaluations se
+        JOIN signals s ON s.id = se.signal_id
+        WHERE s.created_at >= ? AND se.lead_seconds IS NOT NULL
+        ''',
+        (since_ts,)
+    )
+    lead_rows = cursor.fetchall()
+    conn.close()
+
+    total = len(signals)
+    with_evidence = 0
+    latencies: List[int] = []
+    leads: List[int] = []
+    histogram = [
+        {"bucket": "0-5s", "count": 0},
+        {"bucket": "5-15s", "count": 0},
+        {"bucket": "15-30s", "count": 0},
+        {"bucket": "30-60s", "count": 0},
+        {"bucket": "60-120s", "count": 0},
+        {"bucket": "120-300s", "count": 0},
+        {"bucket": "300s+", "count": 0}
+    ]
+
+    lead_histogram = [
+        {"bucket": "0-1m", "count": 0},
+        {"bucket": "1-5m", "count": 0},
+        {"bucket": "5-15m", "count": 0},
+        {"bucket": "15-60m", "count": 0},
+        {"bucket": "1-6h", "count": 0},
+        {"bucket": "6h+", "count": 0}
+    ]
+
+    for row in signals:
+        evidence_json = row.get("evidence_json") or ""
+        if not evidence_json:
+            continue
+        with_evidence += 1
+        try:
+            evidence = json.loads(evidence_json)
+        except Exception:
+            continue
+        triggered_at = _parse_db_datetime(evidence.get("triggeredAt"))
+        created_at = _parse_db_datetime(row.get("created_at"))
+        if not triggered_at or not created_at:
+            continue
+        latency = int((created_at - triggered_at).total_seconds())
+        if latency < 0:
+            latency = 0
+        latencies.append(latency)
+        if latency < 5:
+            histogram[0]["count"] += 1
+        elif latency < 15:
+            histogram[1]["count"] += 1
+        elif latency < 30:
+            histogram[2]["count"] += 1
+        elif latency < 60:
+            histogram[3]["count"] += 1
+        elif latency < 120:
+            histogram[4]["count"] += 1
+        elif latency < 300:
+            histogram[5]["count"] += 1
+        else:
+            histogram[6]["count"] += 1
+
+    for row in lead_rows or []:
+        try:
+            lead = int(row["lead_seconds"] if isinstance(row, dict) else row[0])
+        except Exception:
+            continue
+        if lead < 0:
+            lead = 0
+        leads.append(lead)
+        if lead < 60:
+            lead_histogram[0]["count"] += 1
+        elif lead < 300:
+            lead_histogram[1]["count"] += 1
+        elif lead < 900:
+            lead_histogram[2]["count"] += 1
+        elif lead < 3600:
+            lead_histogram[3]["count"] += 1
+        elif lead < 21600:
+            lead_histogram[4]["count"] += 1
+        else:
+            lead_histogram[5]["count"] += 1
+
+    evaluated_total = int(eval_row["evaluated_count"] or 0) if eval_row else 0
+    hit_total = int(eval_row["hit_count"] or 0) if eval_row else 0
+    hit_rate = (hit_total / evaluated_total) if evaluated_total else 0.0
+    ci = _wilson_ci(hit_total, evaluated_total, 1.96)
+
+    p50 = _percentile(latencies, 50)
+    p90 = _percentile(latencies, 90)
+    lead_p50 = _percentile(leads, 50)
+    lead_p90 = _percentile(leads, 90)
+
+    evidence_rate = (with_evidence / total) if total else 0.0
+    return {
+        "window_days": days,
+        "signals_total": total,
+        "signals_with_evidence": with_evidence,
+        "evidence_rate": evidence_rate,
+        "evaluated_total": evaluated_total,
+        "hit_total": hit_total,
+        "hit_rate": hit_rate,
+        "hit_rate_ci_low": ci["low"],
+        "hit_rate_ci_high": ci["high"],
+        "latency_count": len(latencies),
+        "latency_p50_seconds": p50,
+        "latency_p90_seconds": p90,
+        "latency_histogram": histogram,
+        "lead_count": len(leads),
+        "lead_p50_seconds": lead_p50,
+        "lead_p90_seconds": lead_p90,
+        "lead_histogram": lead_histogram
+    }
+
+def create_notification_attempt(
+    user_id: int,
+    signal_id: int,
+    mode: str,
+    status: str,
+    delay_seconds: int = 0,
+    queued_at: Optional[str] = None,
+    deliver_at: Optional[str] = None
+) -> int:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    execute_sql(
+        cursor,
+        '''
+        INSERT INTO notification_attempts (
+            user_id, signal_id, mode, delay_seconds, queued_at, deliver_at, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''',
+        (user_id, signal_id, mode, delay_seconds, queued_at, deliver_at, status)
+    )
+    conn.commit()
+    attempt_id = None
+    try:
+        attempt_id = cursor.lastrowid
+    except Exception:
+        pass
+    if IS_POSTGRES and attempt_id is None:
+        execute_sql(cursor, 'SELECT LASTVAL() as id')
+        row = cursor.fetchone()
+        attempt_id = row["id"] if row else 0
+    conn.close()
+    return int(attempt_id or 0)
+
+def update_notification_attempt(
+    attempt_id: int,
+    status: str,
+    sent_at: Optional[str] = None,
+    token_count: Optional[int] = None,
+    success_count: Optional[int] = None,
+    failure_count: Optional[int] = None,
+    retry_count: Optional[int] = None,
+    error: Optional[str] = None
+) -> None:
+    fields = []
+    params: List[Any] = []
+    fields.append("status = ?")
+    params.append(status)
+    if sent_at is not None:
+        fields.append("sent_at = ?")
+        params.append(sent_at)
+    if token_count is not None:
+        fields.append("token_count = ?")
+        params.append(token_count)
+    if success_count is not None:
+        fields.append("success_count = ?")
+        params.append(success_count)
+    if failure_count is not None:
+        fields.append("failure_count = ?")
+        params.append(failure_count)
+    if retry_count is not None:
+        fields.append("retry_count = ?")
+        params.append(retry_count)
+    if error is not None:
+        fields.append("error = ?")
+        params.append(error)
+    params.append(attempt_id)
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    execute_sql(
+        cursor,
+        f'''
+        UPDATE notification_attempts
+        SET {", ".join(fields)}
+        WHERE id = ?
+        ''',
+        tuple(params)
+    )
+    conn.commit()
+    conn.close()
+
+def get_delivery_observability(days: int) -> Dict[str, Any]:
+    since_ts = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    execute_sql(
+        cursor,
+        '''
+        SELECT
+            id,
+            mode,
+            delay_seconds,
+            retry_count,
+            queued_at,
+            deliver_at,
+            sent_at,
+            token_count,
+            success_count,
+            failure_count,
+            status
+        FROM notification_attempts
+        WHERE created_at >= ?
+        ORDER BY created_at DESC
+        ''',
+        (since_ts,)
+    )
+    attempts = [dict(row) for row in cursor.fetchall()]
+    execute_sql(
+        cursor,
+        '''
+        SELECT properties
+        FROM analytics_events
+        WHERE event_name = ? AND created_at >= ? AND properties IS NOT NULL AND properties != ''
+        ''',
+        ("push_open", since_ts)
+    )
+    open_rows = cursor.fetchall()
+    conn.close()
+
+    total = len(attempts)
+    queued = 0
+    delayed = 0
+    sent = 0
+    failed = 0
+    no_tokens = 0
+    disabled = 0
+    queue_delays: List[int] = []
+    dispatch_delays: List[int] = []
+
+    for row in attempts:
+        status = (row.get("status") or "").strip().lower()
+        if status == "queued":
+            queued += 1
+        elif status == "delayed":
+            delayed += 1
+        elif status == "sent":
+            sent += 1
+        elif status == "failed":
+            failed += 1
+        elif status == "no_tokens":
+            no_tokens += 1
+        elif status == "disabled":
+            disabled += 1
+
+        queued_at = _parse_db_datetime(row.get("queued_at"))
+        deliver_at = _parse_db_datetime(row.get("deliver_at"))
+        sent_at = _parse_db_datetime(row.get("sent_at"))
+        if queued_at and deliver_at:
+            d = int((deliver_at - queued_at).total_seconds())
+            if d >= 0:
+                queue_delays.append(d)
+        if deliver_at and sent_at:
+            d = int((sent_at - deliver_at).total_seconds())
+            if d >= 0:
+                dispatch_delays.append(d)
+
+    open_count = 0
+    for row in open_rows:
+        raw = row["properties"] if isinstance(row, dict) else row[0]
+        try:
+            payload = json.loads(raw)
+            if isinstance(payload, dict) and payload.get("signalId"):
+                open_count += 1
+        except Exception:
+            continue
+
+    success_rate = (sent / (sent + failed)) if (sent + failed) else 0.0
+    click_through_rate = (open_count / sent) if sent else 0.0
+
+    return {
+        "window_days": days,
+        "attempts_total": total,
+        "queued": queued,
+        "delayed": delayed,
+        "sent": sent,
+        "failed": failed,
+        "no_tokens": no_tokens,
+        "disabled": disabled,
+        "success_rate": success_rate,
+        "push_open_count": open_count,
+        "click_through_rate": click_through_rate,
+        "queue_delay_p50_seconds": _percentile(queue_delays, 50),
+        "queue_delay_p90_seconds": _percentile(queue_delays, 90),
+        "dispatch_delay_p50_seconds": _percentile(dispatch_delays, 50),
+        "dispatch_delay_p90_seconds": _percentile(dispatch_delays, 90)
+    }
+
 def upsert_fcm_token(user_id: int, token: str) -> None:
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -804,7 +1325,7 @@ def save_analytics_event(user_id: Optional[int], event_name: str, properties: Op
 def has_recent_analytics_event(user_id: int, event_name: str, since_hours: int) -> bool:
     conn = get_db_connection()
     cursor = conn.cursor()
-    since_ts = (datetime.utcnow() - timedelta(hours=since_hours)).strftime("%Y-%m-%d %H:%M:%S")
+    since_ts = (datetime.now(timezone.utc) - timedelta(hours=since_hours)).strftime("%Y-%m-%d %H:%M:%S")
     execute_sql(
         cursor,
         '''
@@ -821,7 +1342,7 @@ def has_recent_analytics_event(user_id: int, event_name: str, since_hours: int) 
 def get_signal_stats(days: int = 7) -> Dict[str, int]:
     conn = get_db_connection()
     cursor = conn.cursor()
-    since_ts = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+    since_ts = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
     execute_sql(
         cursor,
         '''

@@ -9,6 +9,7 @@ import com.polypulse.app.data.auth.TokenManager
 import com.polypulse.app.data.remote.dto.AlertDto
 import com.polypulse.app.di.AppModule
 import com.polypulse.app.presentation.util.NotificationHelper
+import com.polypulse.app.data.notifications.NotificationPreferencesStore
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -18,6 +19,7 @@ import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.Calendar
 
 data class AlertsState(
     val alerts: List<AlertDto> = emptyList(),
@@ -31,6 +33,7 @@ class AlertsViewModel(application: Application) : AndroidViewModel(application) 
 
     private val apiProvider = AppModule.backendApiProvider
     private val tokenManager = TokenManager(application)
+    private val preferencesStore = NotificationPreferencesStore(application)
     
     // Store the timestamp of the latest alert we've seen
     private var lastAlertTimestamp: String = ""
@@ -73,11 +76,16 @@ class AlertsViewModel(application: Application) : AndroidViewModel(application) 
                 
                 // Simple check: if we have seen alerts before, and this timestamp is newer
                 if (lastAlertTimestamp.isNotEmpty() && latestAlert.timestamp > lastAlertTimestamp) {
-                     NotificationHelper.showNotification(
-                         getApplication(),
-                         "PolyPulse Alert",
-                         latestAlert.message
-                     )
+                    val prefs = preferencesStore.getSnapshot()
+                    val throttleConfig = preferencesStore.getThrottleConfig()
+                    val throttled = preferencesStore.shouldThrottleWhaleAlert(throttleConfig.whaleAlertIntervalMinutes * 60000L)
+                    if (prefs.whaleRadarEnabled && !throttled && !isQuietHours(prefs.quietHoursEnabled, prefs.quietHoursStart, prefs.quietHoursEnd)) {
+                        NotificationHelper.showNotification(
+                            getApplication(),
+                            "PolyPulse Alert",
+                            latestAlert.message
+                        )
+                    }
                 }
                 
                 // Update our "last seen" to the very newest one
@@ -98,6 +106,16 @@ class AlertsViewModel(application: Application) : AndroidViewModel(application) 
             } else {
                  _state.value = _state.value.copy(isLoading = false)
             }
+        }
+    }
+
+    private fun isQuietHours(enabled: Boolean, startHour: Int, endHour: Int): Boolean {
+        if (!enabled) return false
+        val hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
+        return if (startHour < endHour) {
+            hour in startHour until endHour
+        } else {
+            hour >= startHour || hour < endHour
         }
     }
 

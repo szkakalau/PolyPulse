@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List
 
 
@@ -52,12 +52,13 @@ def detect_whales(trades: List[Dict], min_value: float = 1000) -> List[Dict]:
 
 def _parse_timestamp(value) -> datetime:
     if isinstance(value, (int, float)):
-        return datetime.utcfromtimestamp(value)
+        return datetime.fromtimestamp(value, timezone.utc).replace(tzinfo=None)
     if isinstance(value, str):
         try:
             if value.isdigit():
-                return datetime.utcfromtimestamp(int(value))
-            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+                return datetime.fromtimestamp(int(value), timezone.utc).replace(tzinfo=None)
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return parsed.astimezone(timezone.utc).replace(tzinfo=None) if parsed.tzinfo else parsed
         except Exception:
             pass
-    return datetime.utcnow()
+    return datetime.now(timezone.utc).replace(tzinfo=None)

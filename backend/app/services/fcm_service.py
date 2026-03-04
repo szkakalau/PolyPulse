@@ -52,13 +52,13 @@ class FCMService:
         except Exception as e:
             logger.error(f"Error sending message to topic {topic}: {e}")
 
-    def send_multicast(self, tokens: List[str], title: str, body: str, data: dict = None):
-        """Send message to specific devices (e.g. users watching a market)"""
+    def send_multicast(self, tokens: List[str], title: str, body: str, data: dict = None) -> dict:
         try:
-            if not firebase_admin._apps or not tokens:
-                return
+            if not tokens:
+                return {"successCount": 0, "failureCount": 0, "error": "no_tokens"}
+            if not firebase_admin._apps:
+                return {"successCount": 0, "failureCount": len(tokens), "error": "firebase_not_initialized"}
 
-            # Batch send (up to 500 tokens per batch)
             message = messaging.MulticastMessage(
                 notification=messaging.Notification(
                     title=title,
@@ -69,5 +69,7 @@ class FCMService:
             )
             response = messaging.send_multicast(message)
             logger.info(f"Sent multicast message: {response.success_count} successes, {response.failure_count} failures")
+            return {"successCount": int(response.success_count), "failureCount": int(response.failure_count), "error": None}
         except Exception as e:
             logger.error(f"Error sending multicast message: {e}")
+            return {"successCount": 0, "failureCount": len(tokens or []), "error": str(e)}

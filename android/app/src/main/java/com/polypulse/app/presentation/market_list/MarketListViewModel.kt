@@ -7,6 +7,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.polypulse.app.di.AppModule
 import com.polypulse.app.domain.model.Market
+import com.polypulse.app.data.onboarding.OnboardingPreferencesStore
 import kotlinx.coroutines.launch
 
 class MarketListViewModel(application: Application) : AndroidViewModel(application) {
@@ -17,6 +18,7 @@ class MarketListViewModel(application: Application) : AndroidViewModel(applicati
     private val repository = AppModule.repository
     private val watchlistRepository = AppModule.provideWatchlistRepository(application.applicationContext)
     private val authRepository = AppModule.provideAuthRepository(application.applicationContext)
+    private val onboardingPreferencesStore = OnboardingPreferencesStore(application.applicationContext)
 
     init {
         getMarkets()
@@ -75,6 +77,7 @@ class MarketListViewModel(application: Application) : AndroidViewModel(applicati
         val currentMarkets = _state.value.markets
         val category = _state.value.selectedCategory
         val query = _state.value.searchQuery
+        val preferredCategories = _state.value.preferredCategories
         
         val filteredByCategory = if (category == "Watchlist") {
              currentMarkets.filter { _state.value.watchlistIds.contains(it.id) }
@@ -82,7 +85,8 @@ class MarketListViewModel(application: Application) : AndroidViewModel(applicati
              filterByCategory(currentMarkets, category)
         }
         
-        val finalFiltered = filterByQuery(filteredByCategory, query)
+        val filteredByPreference = applyPreferenceFilter(filteredByCategory, preferredCategories)
+        val finalFiltered = filterByQuery(filteredByPreference, query)
 
         _state.value = _state.value.copy(filteredMarkets = finalFiltered)
     }
@@ -92,9 +96,11 @@ class MarketListViewModel(application: Application) : AndroidViewModel(applicati
             _state.value = _state.value.copy(isLoading = true)
             val result = repository.getMarkets()
             result.onSuccess { markets ->
+                val prefs = onboardingPreferencesStore.getPreferredCategories()
                 // Keep the existing watchlistIds and selectedCategory when markets reload
                 _state.value = _state.value.copy(
                     markets = markets,
+                    preferredCategories = prefs,
                     isLoading = false
                 )
                 updateFilteredMarkets()
@@ -154,6 +160,28 @@ class MarketListViewModel(application: Application) : AndroidViewModel(applicati
                     tags.any { it.contains("sport") || it.contains("nfl") || it.contains("nba") || it.contains("soccer") }
                 }
                 else -> true
+            }
+        }
+    }
+
+    private fun applyPreferenceFilter(markets: List<Market>, preferred: Set<String>): List<Market> {
+        if (preferred.isEmpty() || preferred.contains("Everything")) return markets
+        return markets.filter { market ->
+            preferred.any { preference ->
+                when (preference) {
+                    "Politics" -> filterByCategory(listOf(market), "Politics").isNotEmpty()
+                    "Crypto" -> filterByCategory(listOf(market), "Crypto").isNotEmpty()
+                    "Sports" -> filterByCategory(listOf(market), "Sports").isNotEmpty()
+                    "Macro" -> {
+                        val tags = market.tags.map { it.lowercase() }
+                        val question = market.question.lowercase()
+                        tags.any { it.contains("macro") || it.contains("economy") || it.contains("rates") } ||
+                        question.contains("inflation") ||
+                        question.contains("fed") ||
+                        question.contains("rates")
+                    }
+                    else -> true
+                }
             }
         }
     }

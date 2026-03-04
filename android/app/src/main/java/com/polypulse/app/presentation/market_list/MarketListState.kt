@@ -9,5 +9,6 @@ data class MarketListState(
     val selectedCategory: String = "All",
     val searchQuery: String = "",
     val error: String = "",
-    val watchlistIds: Set<String> = emptySet()
+    val watchlistIds: Set<String> = emptySet(),
+    val preferredCategories: Set<String> = emptySet()
 )
