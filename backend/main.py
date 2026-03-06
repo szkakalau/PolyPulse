@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy import func
 
-from app.database import init_db, get_recent_alerts, create_user, get_user_by_email, get_db_connection
+from app.database import init_db, get_recent_alerts, create_user, get_user_by_email, get_db_connection, save_whale_trade
 from app.database import (
     upsert_subscription,
     get_latest_subscription,
@@ -231,7 +231,12 @@ def check_system_alerts():
 def update_whale_data():
     logger.info("Scheduler: Fetching whale activity...")
     try:
-        whale_service.fetch_whale_activity()
+        whales = whale_service.fetch_whale_activity()
+        for whale in whales:
+            try:
+                save_whale_trade(whale)
+            except Exception:
+                continue
         logger.info("Scheduler: Whale activity updated.")
     except Exception as e:
         logger.error(f"Scheduler Error (Whale): {e}")
@@ -862,9 +867,9 @@ def _build_in_app_message(user_id: int) -> Optional[InAppMessageResponse]:
     if has_recent_analytics_event(user_id, "in_app_message_delivered", 12):
         return None
     plans = [
-        PaywallPlan(id="free", name="Free", price=0, currency="CNY", period="month", trialDays=0),
-        PaywallPlan(id="pro_monthly", name="Pro Monthly", price=49, currency="CNY", period="month", trialDays=7),
-        PaywallPlan(id="pro_yearly", name="Pro Yearly", price=399, currency="CNY", period="year", trialDays=7)
+        PaywallPlan(id="free", name="Free", price=0.0, currency="USD", period="month", trialDays=0),
+        PaywallPlan(id="pro_monthly", name="Pro Monthly", price=9.9, currency="USD", period="month", trialDays=7),
+        PaywallPlan(id="pro_yearly", name="Pro Yearly", price=99.0, currency="USD", period="year", trialDays=7)
     ]
     if _is_trial_expired(user_id):
         return InAppMessageResponse(
@@ -1012,6 +1017,10 @@ def get_dashboard_stats(current_user: dict = Depends(get_current_user)):
 def get_alerts(current_user: dict = Depends(get_current_user)):
     return get_recent_alerts()
 
+@app.get("/api/alerts")
+def api_get_alerts():
+    return get_recent_alerts()
+
 @app.get("/watchlist")
 def watchlist_get(current_user: dict = Depends(get_current_user)):
     return get_watchlist(current_user["id"])
@@ -1042,32 +1051,6 @@ def api_get_whales(limit: int = 50, offset: int = 0, sort: str = "latest"):
     limit, offset = _sanitize_pagination(limit, offset, 200)
     cache_key = _cache_key("whales", [str(limit), str(offset), sort])
     def build():
-        session = get_session()
-        try:
-            query = session.query(Whale, Trade).join(Trade, Whale.trade_id == Trade.id)
-            if sort == "value":
-                query = query.order_by(Whale.value.desc())
-            else:
-                query = query.order_by(Whale.timestamp.desc())
-            rows = query.offset(offset).limit(limit).all()
-            if rows:
-                return [
-                    {
-                        "trade_id": whale.trade_id,
-                        "market_question": trade.question,
-                        "outcome": "",
-                        "side": trade.side,
-                        "price": trade.price,
-                        "size": trade.size,
-                        "value_usd": whale.value,
-                        "timestamp": whale.timestamp.isoformat(),
-                        "maker_address": whale.address,
-                        "market_slug": trade.market
-                    }
-                    for whale, trade in rows
-                ]
-        finally:
-            session.close()
         conn = get_db_connection()
         try:
             cursor = conn.cursor()
@@ -1082,23 +1065,49 @@ def api_get_whales(limit: int = 50, offset: int = 0, sort: str = "latest"):
                 (limit, offset)
             )
             rows = cursor.fetchall()
-            return [
-                {
-                    "trade_id": f"sqlite-{row['id']}",
-                    "market_question": row["market_question"],
-                    "outcome": row["outcome"],
-                    "side": row["side"],
-                    "price": row["price"],
-                    "size": row["size"],
-                    "value_usd": row["value_usd"],
-                    "timestamp": datetime.fromtimestamp(row["timestamp"], timezone.utc).replace(tzinfo=None).isoformat(),
-                    "maker_address": row["maker_address"],
-                    "market_slug": row["market_slug"]
-                }
-                for row in rows
-            ]
+            if rows:
+                return [
+                    {
+                        "trade_id": f"sqlite-{row['id']}",
+                        "market_question": row["market_question"],
+                        "outcome": row["outcome"],
+                        "side": row["side"],
+                        "price": row["price"],
+                        "size": row["size"],
+                        "value_usd": row["value_usd"],
+                        "timestamp": datetime.fromtimestamp(row["timestamp"], timezone.utc).replace(tzinfo=None).isoformat(),
+                        "maker_address": row["maker_address"],
+                        "market_slug": row["market_slug"]
+                    }
+                    for row in rows
+                ]
         finally:
             conn.close()
+        session = get_session()
+        try:
+            query = session.query(Whale, Trade).join(Trade, Whale.trade_id == Trade.id)
+            if sort == "value":
+                query = query.order_by(Whale.value.desc())
+            else:
+                query = query.order_by(Whale.timestamp.desc())
+            rows = query.offset(offset).limit(limit).all()
+            return [
+                {
+                    "trade_id": whale.trade_id,
+                    "market_question": trade.question,
+                    "outcome": "",
+                    "side": trade.side,
+                    "price": trade.price,
+                    "size": trade.size,
+                    "value_usd": whale.value,
+                    "timestamp": whale.timestamp.isoformat(),
+                    "maker_address": whale.address,
+                    "market_slug": trade.market
+                }
+                for whale, trade in rows
+            ]
+        finally:
+            session.close()
     return _cached_response(cache_key, 10, build)
 
 
@@ -1346,9 +1355,9 @@ def get_paywall(current_user: dict = Depends(get_optional_user)):
     user_id = current_user["id"] if current_user else None
     save_analytics_event(user_id, "paywall_view", None)
     plans = [
-        PaywallPlan(id="free", name="Free", price=0, currency="CNY", period="month", trialDays=0),
-        PaywallPlan(id="pro_monthly", name="Pro Monthly", price=49, currency="CNY", period="month", trialDays=7),
-        PaywallPlan(id="pro_yearly", name="Pro Yearly", price=399, currency="CNY", period="year", trialDays=7)
+        PaywallPlan(id="free", name="Free", price=0.0, currency="USD", period="month", trialDays=0),
+        PaywallPlan(id="pro_monthly", name="Pro Monthly", price=9.9, currency="USD", period="month", trialDays=7),
+        PaywallPlan(id="pro_yearly", name="Pro Yearly", price=99.0, currency="USD", period="year", trialDays=7)
     ]
     return PaywallResponse(plans=plans)
 
@@ -1555,16 +1564,62 @@ def api_get_smart_wallets(limit: int = 50, offset: int = 0):
         try:
             rows = session.query(SmartWallet).order_by(SmartWallet.profit.desc()).offset(offset).limit(limit).all()
             if rows:
+                has_signal = any(
+                    (wallet.profit or 0) != 0 or (wallet.roi or 0) != 0 or (wallet.win_rate or 0) != 0
+                    for wallet in rows
+                )
+                if has_signal:
+                    return [
+                        {
+                            "address": wallet.address,
+                            "profit": wallet.profit,
+                            "roi": wallet.roi,
+                            "win_rate": wallet.win_rate,
+                            "total_trades": wallet.total_trades
+                        }
+                        for wallet in rows
+                    ]
+        finally:
+            session.close()
+        conn = get_db_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT maker_address as address,
+                       SUM(value_usd) as total_value,
+                       SUM(CASE WHEN side = 'BUY' THEN value_usd ELSE 0 END) as buy_value,
+                       SUM(CASE WHEN side = 'SELL' THEN value_usd ELSE 0 END) as sell_value,
+                       COUNT(*) as total_trades
+                FROM whale_trades
+                GROUP BY maker_address
+                ORDER BY total_value DESC
+                LIMIT ? OFFSET ?
+                """,
+                (limit, offset)
+            )
+            rows = cursor.fetchall()
+            if rows:
                 return [
                     {
-                        "address": wallet.address,
-                        "profit": wallet.profit,
-                        "roi": wallet.roi,
-                        "win_rate": wallet.win_rate,
-                        "total_trades": wallet.total_trades
+                        "address": row["address"],
+                        "profit": row["total_value"],
+                        "roi": (
+                            (row["buy_value"] - row["sell_value"]) / row["total_value"]
+                            if row["total_value"] else 0.0
+                        ),
+                        "win_rate": (
+                            row["buy_value"] / row["total_value"]
+                            if row["total_value"] else 0.0
+                        ),
+                        "total_trades": row["total_trades"]
                     }
-                    for wallet in rows
+                    for row in rows
                 ]
+        finally:
+            conn.close()
+        session = get_session()
+        try:
             whale_rows = (
                 session.query(
                     Whale.address.label("address"),
@@ -1577,47 +1632,18 @@ def api_get_smart_wallets(limit: int = 50, offset: int = 0):
                 .limit(limit)
                 .all()
             )
-            if whale_rows:
-                return [
-                    {
-                        "address": row.address,
-                        "profit": row.total_value,
-                        "roi": 0.0,
-                        "win_rate": 0.0,
-                        "total_trades": row.total_trades
-                    }
-                    for row in whale_rows
-                ]
-        finally:
-            session.close()
-        conn = get_db_connection()
-        try:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                SELECT maker_address as address,
-                       SUM(value_usd) as total_value,
-                       COUNT(*) as total_trades
-                FROM whale_trades
-                GROUP BY maker_address
-                ORDER BY total_value DESC
-                LIMIT ? OFFSET ?
-                """,
-                (limit, offset)
-            )
-            rows = cursor.fetchall()
             return [
                 {
-                    "address": row["address"],
-                    "profit": row["total_value"],
+                    "address": row.address,
+                    "profit": row.total_value,
                     "roi": 0.0,
                     "win_rate": 0.0,
-                    "total_trades": row["total_trades"]
+                    "total_trades": row.total_trades
                 }
-                for row in rows
+                for row in whale_rows
             ]
         finally:
-            conn.close()
+            session.close()
     return _cached_response(cache_key, 15, build)
 
 
@@ -1658,7 +1684,7 @@ def verify_billing(
         purchase_token=request.purchaseToken,
         purchase_state="purchased",
         amount=0,
-        currency="CNY",
+        currency="USD",
         purchased_at=start_at_str
     )
     upsert_subscription(

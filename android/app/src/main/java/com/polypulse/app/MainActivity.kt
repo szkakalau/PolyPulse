@@ -450,7 +450,8 @@ fun PolyPulseApp(
             }
             composable("leaderboard") {
                 LeaderboardScreen(
-                    viewModel = leaderboardViewModel
+                    viewModel = leaderboardViewModel,
+                    onNavigateBack = { navController.popBackStack() }
                 )
             }
             composable(

@@ -11,12 +11,20 @@ import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.TrendingUp
 import androidx.compose.material.icons.filled.TrendingDown
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Flag
+import androidx.compose.material.icons.filled.AttachMoney
+import androidx.compose.material.icons.filled.Tag
+import androidx.compose.material.icons.filled.AccountBalanceWallet
+import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -28,9 +36,58 @@ import com.polypulse.app.R
 import com.polypulse.app.data.remote.dto.TopMover
 import com.polypulse.app.data.remote.dto.SmartWalletDto
 import com.polypulse.app.data.remote.dto.WhaleActivityDto
+import com.polypulse.app.presentation.components.MenuValueBanner
 import kotlinx.coroutines.delay
 import java.text.NumberFormat
+import java.time.Instant
+import java.time.LocalDateTime
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
 import java.util.Locale
+
+/**
+ * Formats a timestamp string to a human-readable relative time (e.g., "2m ago", "5h ago")
+ */
+fun parseTimestampToInstant(timestamp: String): Instant {
+    return try {
+        if (timestamp.contains("T")) {
+            Instant.parse(timestamp)
+        } else {
+            Instant.ofEpochMilli(timestamp.toLong())
+        }
+    } catch (e: Exception) {
+        Instant.EPOCH
+    }
+}
+
+fun formatAbsoluteTime(timestamp: String): String {
+    return try {
+        val instant = parseTimestampToInstant(timestamp)
+        val formatter = DateTimeFormatter.ofPattern("MM月dd日 HH:mm:ss", Locale.CHINA)
+        LocalDateTime.ofInstant(instant, ZoneId.systemDefault()).format(formatter)
+    } catch (e: Exception) {
+        "—"
+    }
+}
+
+/**
+ * Gets a color based on how recent the activity is (fresher = more vibrant)
+ */
+@Composable
+fun getRecencyColor(minutesAgo: Long): Color {
+    return when {
+        minutesAgo < 5 -> MaterialTheme.colorScheme.primary // Very recent - primary color
+        minutesAgo < 30 -> MaterialTheme.colorScheme.secondary // Recent - secondary color
+        minutesAgo < 120 -> MaterialTheme.colorScheme.tertiary // Somewhat recent - tertiary
+        else -> MaterialTheme.colorScheme.onSurfaceVariant // Older - muted color
+    }
+}
+
+enum class WhaleSortMode {
+    TIME,
+    SIZE
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -44,6 +101,8 @@ fun DashboardScreen(
 ) {
     val state by viewModel.state
     val restoredMessage = remember { mutableStateOf(false) }
+    val showValueBanner = rememberSaveable { mutableStateOf(true) }
+    val sortMode = rememberSaveable { mutableStateOf(WhaleSortMode.TIME) }
 
     LaunchedEffect(state.filterRestoredJustNow) {
         if (state.filterRestoredJustNow) {
@@ -89,6 +148,14 @@ fun DashboardScreen(
                     contentPadding = PaddingValues(16.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
+                    if (showValueBanner.value) {
+                        item {
+                            MenuValueBanner(
+                                text = stringResource(R.string.menu_value_insights),
+                                onDismiss = { showValueBanner.value = false }
+                            )
+                        }
+                    }
                     if (state.stats != null) {
                         item {
                             Text(
@@ -125,11 +192,17 @@ fun DashboardScreen(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    text = stringResource(R.string.dashboard_login_stats),
+                                    text = if (state.statsError == "Please login") {
+                                        stringResource(R.string.dashboard_login_stats)
+                                    } else {
+                                        stringResource(R.string.dashboard_stats_unavailable)
+                                    },
                                     style = MaterialTheme.typography.bodyMedium
                                 )
-                                Button(onClick = onNavigateToLogin) {
-                                    Text(stringResource(R.string.dashboard_action_login))
+                                if (state.statsError == "Please login") {
+                                    Button(onClick = onNavigateToLogin) {
+                                        Text(stringResource(R.string.dashboard_action_login))
+                                    }
                                 }
                             }
                         }
@@ -270,14 +343,36 @@ fun DashboardScreen(
                             )
                         }
                     }
+
+                    item {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            FilterChip(
+                                selected = sortMode.value == WhaleSortMode.TIME,
+                                onClick = { sortMode.value = WhaleSortMode.TIME },
+                                label = { Text(stringResource(R.string.whales_sort_time)) }
+                            )
+                            FilterChip(
+                                selected = sortMode.value == WhaleSortMode.SIZE,
+                                onClick = { sortMode.value = WhaleSortMode.SIZE },
+                                label = { Text(stringResource(R.string.whales_sort_size)) }
+                            )
+                        }
+                    }
                     
                     val visibleWhales = if (state.preferredCategories.isNotEmpty() && !state.temporaryFilterDisabled) {
                         state.filteredWhaleActivity
                     } else {
                         state.whaleActivity
                     }
+                    val sortedWhales = when (sortMode.value) {
+                        WhaleSortMode.TIME -> visibleWhales.sortedByDescending { parseTimestampToInstant(it.timestamp) }
+                        WhaleSortMode.SIZE -> visibleWhales.sortedByDescending { it.size }
+                    }
 
-                    if (visibleWhales.isEmpty()) {
+                    if (sortedWhales.isEmpty()) {
                         item {
                             Text(
                                 text = stringResource(R.string.dashboard_no_large_trades),
@@ -286,7 +381,7 @@ fun DashboardScreen(
                             )
                         }
                     } else {
-                        items(visibleWhales) { whale ->
+                        items(sortedWhales) { whale ->
                             WhaleActivityItem(whale)
                         }
                     }
@@ -313,63 +408,150 @@ fun DashboardScreen(
 
 @Composable
 fun WhaleActivityItem(whale: WhaleActivityDto) {
-    val isBuy = whale.side.equals("BUY", ignoreCase = true)
-    val color = if (isBuy) Color(0xFF4CAF50) else Color(0xFFE53935)
-    val icon = if (isBuy) Icons.Default.TrendingUp else Icons.Default.TrendingDown
-    
     Card(
         modifier = Modifier.fillMaxWidth(),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
     ) {
         Column(
-            modifier = Modifier.padding(12.dp)
+            modifier = Modifier
+                .padding(16.dp)
+                .fillMaxWidth()
         ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = icon,
-                        contentDescription = whale.side,
-                        tint = color,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(
-                        text = if (isBuy) stringResource(R.string.whale_buy_label) else stringResource(R.string.whale_sell_label),
-                        style = MaterialTheme.typography.labelLarge,
-                        color = color,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
+            // 1. Market Header
+            Row(verticalAlignment = Alignment.Top) {
+                Icon(
+                    imageVector = Icons.Default.BarChart,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp).padding(top = 2.dp),
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = NumberFormat.getCurrencyInstance(Locale.US).format(whale.value_usd),
+                    text = whale.market_question,
                     style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    lineHeight = 22.sp
                 )
             }
+
+            Spacer(modifier = Modifier.height(12.dp))
+            Divider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.2f))
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // 2. Details List
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                // Outcome
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Flag,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Outcome: ",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = whale.outcome.ifEmpty { "UNKNOWN" }.uppercase(),
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+
+                // Size (Value in USD)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.AttachMoney,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Size: ",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = NumberFormat.getCurrencyInstance(Locale.US).format(whale.value_usd),
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+
+                // Price
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Tag,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Price: ",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = String.format("%.2f", whale.price),
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+
+                // Wallet
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.AccountBalanceWallet,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Wallet: ",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = "${whale.maker_address.take(6)}...${whale.maker_address.takeLast(4)}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+            }
             
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                text = whale.market_question,
-                style = MaterialTheme.typography.bodyMedium,
-                maxLines = 2
-            )
-            
-            Spacer(modifier = Modifier.height(4.dp))
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // 3. Time (Footer, right aligned)
             Row(
-                horizontalArrangement = Arrangement.SpaceBetween,
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                 Text(
-                    text = "${whale.outcome} @ ${whale.price}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                val relativeTime = formatAbsoluteTime(whale.timestamp)
+                Icon(
+                    imageVector = Icons.Default.Schedule,
+                    contentDescription = null,
+                    modifier = Modifier.size(14.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                 )
-                // You could format timestamp here (e.g., "2m ago")
+                Spacer(modifier = Modifier.width(4.dp))
+                Text(
+                    text = relativeTime,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                )
             }
         }
     }
@@ -449,6 +631,8 @@ fun WhaleListScreen(
 ) {
     val state by viewModel.state
     val restoredMessage = remember { mutableStateOf(false) }
+    val showValueBanner = rememberSaveable { mutableStateOf(true) }
+    val sortMode = rememberSaveable { mutableStateOf(WhaleSortMode.TIME) }
 
     LaunchedEffect(state.filterRestoredJustNow) {
         if (state.filterRestoredJustNow) {
@@ -469,9 +653,38 @@ fun WhaleListScreen(
             )
         }
     ) { padding ->
-        Box(modifier = Modifier.padding(padding).fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .padding(padding)
+                .fillMaxSize()
+        ) {
+            if (showValueBanner.value) {
+                MenuValueBanner(
+                    text = stringResource(R.string.menu_value_whales),
+                    onDismiss = { showValueBanner.value = false }
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                FilterChip(
+                    selected = sortMode.value == WhaleSortMode.TIME,
+                    onClick = { sortMode.value = WhaleSortMode.TIME },
+                    label = { Text(stringResource(R.string.whales_sort_time)) }
+                )
+                FilterChip(
+                    selected = sortMode.value == WhaleSortMode.SIZE,
+                    onClick = { sortMode.value = WhaleSortMode.SIZE },
+                    label = { Text(stringResource(R.string.whales_sort_size)) }
+                )
+            }
+            Spacer(modifier = Modifier.height(12.dp))
             if (state.preferredCategories.isNotEmpty()) {
-                Column(modifier = Modifier.padding(16.dp)) {
+                Column(modifier = Modifier.padding(horizontal = 16.dp)) {
                     Card(
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
                     ) {
@@ -542,7 +755,7 @@ fun WhaleListScreen(
                                                 viewModel.pauseFilterRestore()
                                             }
                                         }) {
-                                                    Text(if (state.filterRestorePaused) "Resume timer" else "Pause timer")
+                                            Text(if (state.filterRestorePaused) "Resume timer" else "Pause timer")
                                         }
                                     }
                                 }
@@ -568,29 +781,35 @@ fun WhaleListScreen(
             } else {
                 state.whales
             }
+            val sortedWhales = when (sortMode.value) {
+                WhaleSortMode.TIME -> visibleWhales.sortedByDescending { parseTimestampToInstant(it.timestamp) }
+                WhaleSortMode.SIZE -> visibleWhales.sortedByDescending { it.size }
+            }
             when {
                 state.isLoading -> {
-                    CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator()
+                    }
                 }
                 state.error != null -> {
-                    Text(
-                        text = state.error ?: "",
-                        color = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.align(Alignment.Center)
-                    )
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text(
+                            text = state.error ?: "",
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
                 }
-                visibleWhales.isEmpty() -> {
-                    Text(
-                        text = "No whale trades yet.",
-                        modifier = Modifier.align(Alignment.Center)
-                    )
+                sortedWhales.isEmpty() -> {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text(text = "No whale trades yet.")
+                    }
                 }
                 else -> {
                     LazyColumn(
                         contentPadding = PaddingValues(16.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        items(visibleWhales) { whale ->
+                        items(sortedWhales) { whale ->
                             WhaleActivityItem(whale)
                         }
                     }

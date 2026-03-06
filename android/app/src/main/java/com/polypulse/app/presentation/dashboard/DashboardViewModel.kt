@@ -19,6 +19,7 @@ import retrofit2.HttpException
 data class DashboardState(
     val isLoading: Boolean = false,
     val stats: DashboardStatsResponse? = null,
+    val statsError: String? = null,
     val whaleActivity: List<WhaleActivityDto> = emptyList(),
     val filteredWhaleActivity: List<WhaleActivityDto> = emptyList(),
     val preferredCategories: Set<String> = emptySet(),
@@ -64,6 +65,12 @@ class DashboardViewModel(
                 
                 val statsResult = statsDeferred.await()
                 val whalesResult = whalesDeferred.await()
+                val statsError = if (statsResult.isFailure) {
+                    statsResult.exceptionOrNull()?.let { mapHttpError(it, "Stats unavailable") }
+                        ?: "Stats unavailable"
+                } else {
+                    null
+                }
                 
                 if (whalesResult.isSuccess) {
                     val prefs = onboardingPreferencesStore.getPreferredCategories()
@@ -72,6 +79,7 @@ class DashboardViewModel(
                     _state.value = _state.value.copy(
                         isLoading = false,
                         stats = statsResult.getOrNull(),
+                        statsError = statsError,
                         whaleActivity = whales,
                         filteredWhaleActivity = filteredWhales,
                         preferredCategories = prefs,
@@ -89,6 +97,7 @@ class DashboardViewModel(
                     val mappedError = if (errorMsg == "No token found") "Please login" else errorMsg
                     _state.value = _state.value.copy(
                         isLoading = false,
+                        statsError = statsError,
                         error = mappedError
                     )
                 }
@@ -97,6 +106,7 @@ class DashboardViewModel(
                  val mappedError = if (errorMsg == "No token found") "Please login" else errorMsg
                  _state.value = _state.value.copy(
                     isLoading = false,
+                    statsError = mappedError,
                     error = mappedError
                 )
             }

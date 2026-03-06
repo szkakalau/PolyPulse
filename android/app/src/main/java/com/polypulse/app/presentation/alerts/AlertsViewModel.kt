@@ -68,7 +68,15 @@ class AlertsViewModel(application: Application) : AndroidViewModel(application) 
                 return
             }
 
-            val newAlerts = apiProvider.call { it.getAlerts("Bearer $token") }
+            val newAlerts = try {
+                apiProvider.call { it.getAlerts("Bearer $token") }
+            } catch (e: Exception) {
+                if (e is HttpException && e.code() == 404) {
+                    apiProvider.call { it.getPublicAlerts() }
+                } else {
+                    throw e
+                }
+            }
             
             if (newAlerts.isNotEmpty()) {
                 // Check for new alerts to notify

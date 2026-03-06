@@ -7,6 +7,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -27,6 +29,7 @@ import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 
 import androidx.compose.ui.res.stringResource
 import com.polypulse.app.R
+import com.polypulse.app.presentation.components.MenuValueBanner
 
 import androidx.compose.material.ExperimentalMaterialApi
 import androidx.compose.material.pullrefresh.PullRefreshIndicator
@@ -41,6 +44,7 @@ fun MarketListScreen(
 ) {
     val state = viewModel.state.value
     val categories = listOf("All", "Politics", "Crypto", "Sports", "Watchlist")
+    val showValueBanner = rememberSaveable { mutableStateOf(true) }
 
     // Pull to Refresh State
     val refreshState = rememberPullRefreshState(
@@ -58,6 +62,13 @@ fun MarketListScreen(
                         titleContentColor = MaterialTheme.colorScheme.onPrimary
                     )
                 )
+
+                if (showValueBanner.value) {
+                    MenuValueBanner(
+                        text = stringResource(R.string.menu_value_markets),
+                        onDismiss = { showValueBanner.value = false }
+                    )
+                }
                 
                 // Search Bar
                 OutlinedTextField(

@@ -35,6 +35,9 @@ interface BackendApi {
     @GET("dashboard/alerts")
     suspend fun getAlerts(@Header("Authorization") token: String): List<com.polypulse.app.data.remote.dto.AlertDto>
 
+    @GET("api/alerts")
+    suspend fun getPublicAlerts(): List<com.polypulse.app.data.remote.dto.AlertDto>
+
     @POST("register")
     suspend fun register(@Body request: RegisterRequest): UserResponse
 

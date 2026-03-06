@@ -428,7 +428,7 @@ fun PaywallPlanCard(
     plan: PaywallPlanDto,
     isSelected: Boolean,
     onSelected: () -> Unit,
-    monthlyPrice: Int?
+    monthlyPrice: Double?
 ) {
     Card(
         modifier = Modifier
@@ -475,8 +475,8 @@ private fun CredibilityWindow(
     }
 }
 
-private fun computeSavingsPercent(plan: PaywallPlanDto, monthlyPrice: Int?): Int? {
-    if (monthlyPrice == null) return null
+private fun computeSavingsPercent(plan: PaywallPlanDto, monthlyPrice: Double?): Int? {
+    if (monthlyPrice == null || monthlyPrice == 0.0) return null
     val period = plan.period.lowercase(Locale.US)
     if (!period.contains("year")) return null
     val yearlyFromMonthly = monthlyPrice * 12.0
@@ -485,14 +485,19 @@ private fun computeSavingsPercent(plan: PaywallPlanDto, monthlyPrice: Int?): Int
     return if (savings > 0) savings else null
 }
 
-private fun formatPrice(amount: Int, currency: String): String {
+private fun formatPrice(amount: Double, currency: String): String {
     val symbol = when (currency.uppercase(Locale.US)) {
         "CNY" -> "¥"
         "USD" -> "$"
         "EUR" -> "€"
         else -> currency
     }
-    return "$symbol$amount"
+    val formatted = if (amount % 1.0 == 0.0) {
+        String.format(Locale.US, "%.0f", amount)
+    } else {
+        String.format(Locale.US, "%.1f", amount)
+    }
+    return "$symbol$formatted"
 }
 
 private fun formatPercent(value: Double): String {

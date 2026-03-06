@@ -113,7 +113,7 @@ class MarketService:
                     for t in item['tokens']:
                         tokens.append(Token(
                             token_id=t.get('token_id', ''),
-                            outcome=t.get('outcome', ''),
+                            outcome=t.get('outcome', '') or t.get('name', '') or t.get('label', ''),
                             price=float(t.get('price', 0.0) or 0.0),
                             winner=t.get('winner', False)
                         ))
@@ -162,7 +162,7 @@ class MarketService:
                     for t in item['tokens']:
                         tokens.append(Token(
                             token_id=t.get('token_id', ''),
-                            outcome=t.get('outcome', ''),
+                            outcome=t.get('outcome', '') or t.get('name', '') or t.get('label', ''),
                             price=float(t.get('price', 0.0) or 0.0),
                             winner=t.get('winner', False)
                         ))

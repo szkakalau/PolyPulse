@@ -6,7 +6,7 @@ import kotlinx.serialization.Serializable
 data class PaywallPlanDto(
     val id: String,
     val name: String,
-    val price: Int,
+    val price: Double,
     val currency: String,
     val period: String,
     val trialDays: Int

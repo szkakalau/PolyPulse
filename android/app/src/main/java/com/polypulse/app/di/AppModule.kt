@@ -33,8 +33,8 @@ import com.polypulse.app.data.notifications.NotificationPreferencesStore
 object AppModule {
     private const val BASE_URL = "https://clob.polymarket.com/"
     private val backendBaseUrls = listOf(
-        "http://10.0.2.2:8000/",
-        "http://192.168.2.123:8000/", // Added for physical device testing
+        "http://10.0.2.2:8001/",
+        "http://192.168.2.123:8001/", // Added for physical device testing
         "https://backend-production-1981.up.railway.app/"
     )
 

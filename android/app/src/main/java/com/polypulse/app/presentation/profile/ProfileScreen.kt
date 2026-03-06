@@ -7,6 +7,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -19,6 +20,7 @@ import com.polypulse.app.data.repository.AnalyticsRepository
 import com.polypulse.app.data.notifications.NotificationPreferencesStore
 import com.polypulse.app.data.notifications.NotificationPreferences
 import com.polypulse.app.data.notifications.NotificationThrottleConfig
+import com.polypulse.app.presentation.components.MenuValueBanner
 import java.util.Locale
 import kotlinx.coroutines.launch
 import android.content.Intent
@@ -41,6 +43,7 @@ fun ProfileScreen(
     val context = LocalContext.current
     val restoreMessage = remember { mutableStateOf<String?>(null) }
     val restoreLoading = remember { mutableStateOf(false) }
+    val showValueBanner = rememberSaveable { mutableStateOf(true) }
 
     if (state.isLoggedIn && state.user != null) {
         val tier = paywallState.entitlements?.tier ?: "free"
@@ -53,6 +56,13 @@ fun ProfileScreen(
                 .padding(16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            if (showValueBanner.value) {
+                MenuValueBanner(
+                    text = stringResource(R.string.menu_value_profile),
+                    onDismiss = { showValueBanner.value = false }
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+            }
             Text(
                 text = stringResource(R.string.profile_title),
                 style = MaterialTheme.typography.headlineMedium
@@ -162,6 +172,13 @@ fun ProfileScreen(
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            if (showValueBanner.value) {
+                MenuValueBanner(
+                    text = stringResource(R.string.menu_value_profile),
+                    onDismiss = { showValueBanner.value = false }
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+            }
             Text(stringResource(R.string.profile_not_logged_in))
             Spacer(modifier = Modifier.height(16.dp))
             Button(onClick = onNavigateToLogin) {

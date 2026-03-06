@@ -81,7 +81,7 @@ class SignalResponse(BaseModel):
 class PaywallPlan(BaseModel):
     id: str
     name: str
-    price: int
+    price: float
     currency: str
     period: str
     trialDays: int

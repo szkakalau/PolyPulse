@@ -78,6 +78,16 @@
     <string name="signal_detail_market">Market: %1$s</string>
     <string name="signal_detail_wallet">Wallet: %1$s</string>
     <string name="signal_detail_link">Evidence link</string>
+    <string name="menu_value_markets">发现热门市场与交易机会，快速定位高流动性标的。</string>
+    <string name="menu_value_insights">把市场信号转成可执行的判断，提升决策质量。</string>
+    <string name="menu_value_whales">跟踪大资金动向，提前识别情绪与资金转向。</string>
+    <string name="menu_value_alerts">把关键机会主动推送给你，减少错过窗口。</string>
+    <string name="menu_value_profile">管理订阅与偏好，优化你的长期体验。</string>
+    <string name="menu_value_dismiss">关闭</string>
+    <string name="whales_sort_time">按时间</string>
+    <string name="whales_sort_size">按Size</string>
+    <string name="alerts_empty">暂无提醒</string>
+    <string name="dashboard_stats_unavailable">Stats 暂不可用</string>
     <string name="signal_detail_unlock">Unlock Pro</string>
     <string name="signal_detail_credibility">See credibility</string>
     <string name="signal_detail_feedback_title">Was this signal helpful?</string>

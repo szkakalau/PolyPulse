@@ -5,6 +5,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -16,11 +18,17 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 
 import androidx.compose.ui.res.stringResource
 import com.polypulse.app.R
+import com.polypulse.app.presentation.components.MenuValueBanner
 
 import androidx.compose.material.ExperimentalMaterialApi
 import androidx.compose.material.pullrefresh.PullRefreshIndicator
 import androidx.compose.material.pullrefresh.pullRefresh
 import androidx.compose.material.pullrefresh.rememberPullRefreshState
+import java.time.Instant
+import java.time.LocalDateTime
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterialApi::class)
 @Composable
@@ -29,6 +37,7 @@ fun AlertsScreen(
     onNavigateToLogin: () -> Unit
 ) {
     val state = viewModel.state.value
+    val showValueBanner = rememberSaveable { mutableStateOf(true) }
 
     // Pull to Refresh State
     val refreshState = rememberPullRefreshState(
@@ -81,8 +90,26 @@ fun AlertsScreen(
                 contentPadding = PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                items(state.alerts) { alert ->
-                    AlertItem(alert)
+                if (showValueBanner.value) {
+                    item {
+                        MenuValueBanner(
+                            text = stringResource(R.string.menu_value_alerts),
+                            onDismiss = { showValueBanner.value = false }
+                        )
+                    }
+                }
+                if (!state.isLoading && state.error.isBlank() && state.alerts.isEmpty()) {
+                    item {
+                        Text(
+                            text = stringResource(R.string.alerts_empty),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                } else {
+                    items(state.alerts) { alert ->
+                        AlertItem(alert)
+                    }
                 }
             }
 
@@ -112,7 +139,7 @@ fun AlertItem(alert: AlertDto) {
                     color = MaterialTheme.colorScheme.primary
                 )
                 Text(
-                    text = alert.timestamp.take(16).replace("T", " "),
+                    text = formatAbsoluteTime(alert.timestamp),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.outline
                 )
@@ -146,5 +173,19 @@ fun AlertItem(alert: AlertDto) {
                 )
             }
         }
+    }
+}
+
+private fun formatAbsoluteTime(timestamp: String): String {
+    return try {
+        val instant = if (timestamp.contains("T")) {
+            Instant.parse(timestamp)
+        } else {
+            Instant.ofEpochMilli(timestamp.toLong())
+        }
+        val formatter = DateTimeFormatter.ofPattern("MM月dd日 HH:mm:ss", Locale.CHINA)
+        LocalDateTime.ofInstant(instant, ZoneId.systemDefault()).format(formatter)
+    } catch (e: Exception) {
+        "—"
     }
 }
