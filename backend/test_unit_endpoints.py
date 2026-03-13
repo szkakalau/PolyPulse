@@ -37,6 +37,16 @@ def test_health_endpoint():
 
 
 @pytest.mark.unit
+def test_health_rate_limit_triggers():
+    main_module.rate_limiter._local.clear()
+    last = None
+    for _ in range(11):
+        last = client.get("/health")
+    assert last is not None
+    assert last.status_code == 429
+
+
+@pytest.mark.unit
 def test_monitor_alert_info():
     r = client.post("/monitor/alert", json={"level": "info", "message": "hello", "source": "test"})
     assert r.status_code == 200
@@ -73,6 +83,15 @@ def test_signals_list_unauthenticated():
         assert "title" in it
         assert "locked" in it
         assert "tierRequired" in it
+
+
+@pytest.mark.unit
+def test_signals_pagination_sanitized():
+    r = client.get("/signals", params={"limit": -5, "offset": -1})
+    assert r.status_code == 200
+    items = r.json()
+    assert isinstance(items, list)
+    assert len(items) == 1
 
 
 @pytest.mark.unit

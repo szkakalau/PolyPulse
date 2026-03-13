@@ -77,13 +77,12 @@ test("topbar and navigation render", async ({ page }) => {
   })
   await page.goto("/")
   await expect(page.getByText("PolyPulse")).toBeVisible()
-  await expect(page.getByText("Admin Console")).toBeVisible()
   await expect(page.getByRole("link", { name: "Credibility" })).toBeVisible()
   await expect(page.getByRole("link", { name: "Delivery" })).toBeVisible()
-  await expect(page.getByRole("link", { name: "Whales" })).toBeVisible()
+  await expect(page.getByRole("link", { name: "Whale Radar" })).toBeVisible()
   await expect(page.getByRole("link", { name: "Smart Money" })).toBeVisible()
-  await expect(page.getByRole("link", { name: "Trades" })).toBeVisible()
-  await expect(page.getByRole("button", { name: "Sync" })).toBeVisible()
+  await expect(page.getByRole("link", { name: "Trade Feed" })).toBeVisible()
+  await expect(page.getByRole("button", { name: "Sync Data" })).toBeVisible()
 })
 
 test("navigate between pages", async ({ page }) => {
@@ -97,11 +96,11 @@ test("navigate between pages", async ({ page }) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: "[]" })
   })
   await page.goto("/")
-  await expect(page.getByRole("heading", { name: "Signal Credibility" })).toBeVisible()
+  await expect(page.locator(".page-title")).toHaveText("Credibility")
   await page.getByRole("link", { name: "Smart Money" }).click()
-  await expect(page.getByRole("heading", { name: "Smart Money" })).toBeVisible()
-  await page.getByRole("link", { name: "Trades" }).click()
-  await expect(page.getByRole("heading", { name: "Trades" })).toBeVisible()
+  await expect(page.locator(".page-title")).toHaveText("Smart Money")
+  await page.getByRole("link", { name: "Trade Feed" }).click()
+  await expect(page.locator(".page-title")).toHaveText("Trade Feed")
 })
 
 test("refresh triggers API request", async ({ page }) => {
@@ -117,8 +116,35 @@ test("refresh triggers API request", async ({ page }) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: "[]" })
   })
   await page.goto("/")
-  await page.getByRole("button", { name: "Sync" }).click()
+  await page.getByRole("button", { name: "Sync Data" }).click()
   await expect.poll(() => refreshCount).toBe(1)
+})
+
+test("signal landing renders without sidebar", async ({ page }) => {
+  await page.route("**/signals/123", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        id: 123,
+        title: "Test Signal",
+        content: "Test Content",
+        locked: false,
+        tierRequired: "free",
+        createdAt: "2025-01-01 00:00:00",
+        evidence: null
+      })
+    })
+  })
+  await page.goto("/")
+  await page.evaluate(() => {
+    window.history.pushState({}, "", "/signals/123")
+    window.dispatchEvent(new PopStateEvent("popstate"))
+  })
+  await expect(page.getByRole("link", { name: "PolyPulse" })).toBeVisible()
+  await expect(page.getByRole("button", { name: "Open App" })).toBeVisible()
+  await expect(page.getByRole("heading", { name: "Test Signal" })).toBeVisible()
+  await expect(page.locator(".sidebar")).toHaveCount(0)
 })
 
 test("refresh double click counts two requests and toggles label", async ({ page }) => {
@@ -136,12 +162,13 @@ test("refresh double click counts two requests and toggles label", async ({ page
     await route.fulfill({ status: 200, contentType: "application/json", body: "[]" })
   })
   await page.goto("/")
+  await expect(refreshButton).toHaveText("Sync Data")
   await refreshButton.click()
-  await expect(refreshButton).toHaveText("Syncing…")
+  await expect(refreshButton).toHaveText(/Syncing\.\.\./)
   await expect.poll(() => refreshCount).toBe(1)
-  await expect(refreshButton).toHaveText("Sync")
+  await expect(refreshButton).toHaveText("Sync Data")
   await refreshButton.click()
-  await expect(refreshButton).toHaveText("Syncing…")
+  await expect(refreshButton).toHaveText(/Syncing\.\.\./)
   await expect.poll(() => refreshCount).toBe(2)
-  await expect(refreshButton).toHaveText("Sync")
+  await expect(refreshButton).toHaveText("Sync Data")
 })

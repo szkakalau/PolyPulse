@@ -3,7 +3,7 @@ import { test, expect } from "@playwright/test"
 test.describe("Debug - Page Structure Analysis", () => {
   
   test("检查页面基本结构", async ({ page }) => {
-    await page.goto("http://localhost:4173")
+    await page.goto("/")
     await page.waitForLoadState("networkidle")
     
     // 等待React应用加载
@@ -51,7 +51,7 @@ test.describe("Debug - Page Structure Analysis", () => {
       }
     })
     
-    await page.goto("http://localhost:4173")
+    await page.goto("/")
     await page.waitForLoadState("networkidle")
     await page.waitForTimeout(2000)
   })

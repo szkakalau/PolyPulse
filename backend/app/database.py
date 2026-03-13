@@ -18,7 +18,7 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = "polypulse.db"
+DB_PATH = os.environ.get("DB_PATH") or "polypulse.db"
 DATABASE_URL = os.environ.get("DATABASE_URL")
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)

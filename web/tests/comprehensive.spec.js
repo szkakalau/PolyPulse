@@ -118,7 +118,7 @@ test.describe("PolyPulse Web Application - Comprehensive Test Suite", () => {
   
   test.beforeEach(async ({ page }) => {
     // 拦截API请求并返回模拟数据
-    await page.route("**/api/credibility", route => {
+    await page.route("**/insights/credibility", route => {
       route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -130,20 +130,20 @@ test.describe("PolyPulse Web Application - Comprehensive Test Suite", () => {
       route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify(mockWhalesData)
+        body: JSON.stringify([])
       })
     })
     
-    await page.route("**/api/smart-money", route => {
+    await page.route("**/api/smart", route => {
       route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify(mockSmartMoneyData)
+        body: JSON.stringify([])
       })
     })
     
     // 导航到应用
-    await page.goto("http://localhost:4173")
+    await page.goto("/")
     await page.waitForLoadState("networkidle")
   })
 
@@ -247,7 +247,7 @@ test.describe("PolyPulse Web Application - Comprehensive Test Suite", () => {
 
   test("错误处理测试", async ({ page }) => {
     // 模拟API错误
-    await page.route("**/api/credibility", route => {
+    await page.route("**/insights/credibility", route => {
       route.fulfill({
         status: 500,
         contentType: "application/json",
